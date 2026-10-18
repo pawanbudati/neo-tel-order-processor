@@ -1,0 +1,395 @@
+import uuid
+from typing import Dict, Any, List, Optional
+import pyotp
+
+from config.settings import settings
+from src.logger import logger
+from src.models import OrderPlacement, OrderStatus, KotakAccountConfig
+
+try:
+    from neo_api_client import NeoAPI
+except ImportError:
+    NeoAPI = None
+
+class KotakClient:
+    """
+    Unified client for Kotak Neo API.
+    Connects to Kotak Neo for live order execution only.
+    Can be instantiated for a specific account or default settings.
+    """
+
+    def __init__(
+        self,
+        account_config: Optional[KotakAccountConfig] = None
+    ):
+        self.account_config = account_config
+        self.account_id = account_config.account_id if account_config else "default"
+
+        if account_config:
+            self.consumer_key = account_config.consumer_key
+            self.mobile_number = account_config.mobile_number
+            self.ucc = account_config.ucc
+            self.totp_key = account_config.totp_key
+            self.mpin = account_config.mpin
+            self.environment = account_config.environment
+            is_configured = bool(
+                self.consumer_key
+                and self.mobile_number
+                and self.ucc
+                and self.totp_key
+                and self.mpin
+                and not any("your_" in str(x).lower() for x in (
+                    self.consumer_key, self.mobile_number, self.ucc, self.totp_key, self.mpin
+                ))
+            )
+        else:
+            self.consumer_key = settings.kotak_consumer_key
+            self.mobile_number = settings.kotak_mobile_number
+            self.ucc = settings.kotak_ucc
+            self.totp_key = settings.kotak_totp_key
+            self.mpin = settings.kotak_mpin
+            self.environment = settings.kotak_environment
+            is_configured = settings.is_kotak_configured()
+
+        self.client: Optional[NeoAPI] = None
+        self.is_authenticated = False
+
+        acc_tag = f"[{self.account_id}] " if self.account_id != "default" else ""
+        if not is_configured:
+            raise RuntimeError("Kotak credentials are incomplete; live consumer startup aborted")
+        if NeoAPI is None:
+            raise RuntimeError("kotakneoapi is not installed; live consumer startup aborted")
+        self._init_live_client()
+
+    def _init_live_client(self):
+        """Initializes and authenticates with Kotak Neo API."""
+        acc_tag = f"[{self.account_id}] " if self.account_id != "default" else ""
+        try:
+            logger.info(f"[cyan]{acc_tag}Authenticating with Kotak Neo API...[/cyan]")
+            self.client = NeoAPI(
+                consumer_key=self.consumer_key,
+                environment=self.environment
+            )
+
+            # Generate TOTP
+            if not self.totp_key:
+                raise ValueError("KOTAK_TOTP_KEY must be configured for live execution")
+            totp_code = pyotp.TOTP(self.totp_key.strip()).now()
+
+            # Step 1: TOTP Login
+            login_resp = self.client.totp_login(
+                mobile_number=self.mobile_number,
+                ucc=self.ucc,
+                totp=totp_code
+            )
+            self._raise_if_api_error(login_resp, "TOTP login")
+            logger.debug(f"{acc_tag}TOTP Login response: {login_resp}")
+
+            # Step 2: Validate MPIN
+            val_resp = self.client.totp_validate(mpin=self.mpin)
+            self._raise_if_api_error(val_resp, "MPIN validation")
+            logger.debug(f"{acc_tag}MPIN Validation response: {val_resp}")
+
+            self.is_authenticated = True
+            logger.info(f"[bold green]{acc_tag}Successfully authenticated with Kotak Neo API.[/bold green]")
+        except Exception as e:
+            logger.error(f"[bold red]{acc_tag}Kotak Neo authentication failed:[/bold red] {e}")
+            self.client = None
+            raise RuntimeError("Kotak Neo authentication failed; live consumer startup aborted") from e
+
+    @staticmethod
+    def _raise_if_api_error(response: Any, action: str):
+        if isinstance(response, dict):
+            error = response.get("Error") or response.get("error") or response.get("Error Message")
+            stat = response.get("stat")
+            if error or (stat and str(stat).lower() not in ("ok", "success")):
+                raise RuntimeError(f"Kotak {action} rejected: {error or stat}")
+
+    def resolve_symbol(
+        self,
+        index: str,
+        strike: float,
+        option_type: str,
+        expiry: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Resolves the exact exchange segment and trading symbol for a given option contract.
+        Picks the nearest upcoming active expiry by default and extracts scrip lot size.
+        """
+        from datetime import datetime
+        idx = index.upper().strip()
+        opt = option_type.upper().strip()
+        strike_int = int(strike)
+
+        # Exchange segment mapping: NFO for NSE, BFO for BSE
+        if idx in ("SENSEX", "BANKEX"):
+            exchange_segment = "bse_fo"
+        else:
+            exchange_segment = "nse_fo"
+
+        if self.client and self.is_authenticated:
+            try:
+                results = self.client.search_scrip(
+                    exchange_segment=exchange_segment,
+                    symbol=idx,
+                    option_type=opt,
+                    strike_price=str(strike_int)
+                )
+                if isinstance(results, list) and len(results) > 0:
+                    # Filter strictly by exact index symbol name (e.g. exclude FINNIFTY when searching NIFTY)
+                    filtered_results = [
+                        r for r in results
+                        if r.get("pSymbolName", "").strip().upper() == idx
+                        and r.get("pTrdSymbol")
+                    ]
+                    if not filtered_results:
+                        raise RuntimeError(f"Kotak returned no exact scrip match for {idx} {strike_int} {opt}")
+
+                    def parse_expiry(item):
+                        exp_str = item.get("pExpiryDate")
+                        if not exp_str:
+                            return datetime.max
+                        try:
+                            return datetime.strptime(exp_str, "%d%b%Y")
+                        except Exception:
+                            return datetime.max
+
+                    # Only trade contracts whose expiry is known and still active.
+                    today = datetime.now().date()
+                    active_candidates = [
+                        r for r in filtered_results
+                        if parse_expiry(r).date() >= today and parse_expiry(r) != datetime.max
+                    ]
+                    if not active_candidates:
+                        raise RuntimeError(f"No active expiry returned for {idx} {strike_int} {opt}")
+                    candidates = active_candidates
+
+                    # If target_expiry was requested, filter candidates matching it
+                    if expiry:
+                        exp_req = expiry.strip().upper()
+                        matching = [
+                            r for r in candidates
+                            if exp_req in r.get("pExpiryDate", "").upper() or exp_req in r.get("pTrdSymbol", "").upper()
+                        ]
+                        if not matching:
+                            raise RuntimeError(f"Requested expiry {expiry} was not found")
+                        candidates = matching
+
+                    sorted_results = sorted(candidates, key=parse_expiry)
+                    chosen = sorted_results[0]
+                    matched_symbol = chosen.get("pTrdSymbol")
+                    lot_size = chosen.get("lLotSize") or chosen.get("iLotSize")
+
+                    if matched_symbol:
+                        if not lot_size:
+                            raise RuntimeError(f"Kotak scrip data has no lot size for {matched_symbol}")
+                        res_dict = {
+                            "trading_symbol": matched_symbol,
+                            "exchange_segment": exchange_segment,
+                            "lot_size": int(lot_size)
+                        }
+                        logger.info(
+                            f"Resolved scrip via Kotak search: {matched_symbol} "
+                            f"(Expiry: {chosen.get('pExpiryDate')}, Lot Size: {res_dict.get('lot_size')})"
+                        )
+                        return res_dict
+                raise RuntimeError(f"Kotak returned no contracts for {idx} {strike_int} {opt}")
+            except Exception as e:
+                logger.error(f"Kotak scrip lookup failed for {idx} {strike_int} {opt}: {e}")
+                raise RuntimeError("Unable to resolve a live Kotak contract; refusing to guess a trading symbol") from e
+        raise RuntimeError("Kotak client is not authenticated; live execution is unavailable")
+
+    def place_order(self, order: OrderPlacement) -> Dict[str, Any]:
+        """Places a new order (SL, Limit, or Market)."""
+        price_str = f"{order.price:.2f}"
+        trigger_str = f"{order.trigger_price:.2f}" if order.trigger_price else "0"
+
+        # Map transaction_type: Kotak Neo requires 'B' or 'S'
+        raw_tt = str(order.transaction_type or "B").strip().upper()
+        mapped_tt = "B" if raw_tt in ("B", "BUY") else ("S" if raw_tt in ("S", "SELL") else "B")
+
+        try:
+            logger.info(
+                f"[bold green][LIVE] Sending Order to Kotak Neo:[/bold green] "
+                f"{mapped_tt} {order.quantity}x {order.trading_symbol} | "
+                f"Segment={order.exchange_segment} | Product={order.product} | "
+                f"Type={order.order_type} | Price={price_str} | Trigger={trigger_str}"
+            )
+
+            # Kotak Neo maps 'tag' to 'ig' (Client Order ID / GuiOrdId) which the OMS requires
+            # to be strictly unique per trading day. Ensure any non-empty tag is unique, alphanumeric,
+            # and within 20 chars to prevent 'Client OrderID already exists' errors.
+            tag_to_send = None
+            if order.tag:
+                clean_tag = "".join(c for c in order.tag if c.isalnum())
+                # If tag already contains unique random/timestamp suffix (e.g. TG1A2B3C4D), use it up to 20 chars
+                if len(clean_tag) >= 10 and not clean_tag.isalpha():
+                    tag_to_send = clean_tag[:20]
+                else:
+                    unique_suffix = uuid.uuid4().hex[:6].upper()
+                    clean_prefix = clean_tag[:14] if clean_tag else "TG"
+                    tag_to_send = f"{clean_prefix}{unique_suffix}"[:20]
+
+            resp = self.client.place_order(
+                exchange_segment=order.exchange_segment,
+                product=order.product,
+                price=price_str,
+                order_type=order.order_type,
+                quantity=str(order.quantity),
+                validity=order.validity,
+                trading_symbol=order.trading_symbol,
+                transaction_type=mapped_tt,
+                trigger_price=trigger_str,
+                tag=tag_to_send
+            )
+            logger.info(f"Kotak Neo place_order response: {resp}")
+
+            if not isinstance(resp, dict):
+                logger.error(f"[bold red]Unexpected Kotak Neo response:[/bold red] {resp}")
+                return {"success": False, "error": f"Unexpected response: {resp}"}
+
+            if "Error" in resp or "error" in resp or "Error Message" in resp:
+                err_val = resp.get("Error") or resp.get("error") or resp.get("Error Message")
+                logger.error(f"[bold red]Kotak Neo order placement rejected:[/bold red] {err_val}")
+                return {"success": False, "error": str(err_val), "response": resp}
+
+            stat = resp.get("stat")
+            if stat and stat != "Ok":
+                err_msg = resp.get("errMsg") or stat
+                if resp.get("errMsg") and resp.get("errMsg") != stat:
+                    err_msg = f"{resp.get('errMsg')}: {stat}"
+                logger.error(f"[bold red]Kotak Neo order placement failed:[/bold red] {err_msg}")
+                return {"success": False, "error": err_msg, "response": resp}
+
+            order_id = resp.get("nOrdNo") or resp.get("order_id") or resp.get("result")
+            if not order_id or str(order_id).strip().lower() in ("none", ""):
+                err_msg = resp.get("stat") or resp.get("errMsg") or "No valid order ID returned by Kotak Neo"
+                logger.error(f"[bold red]Kotak Neo placed order returned no order ID:[/bold red] {resp}")
+                return {"success": False, "error": err_msg, "response": resp}
+
+            return {"success": True, "order_id": str(order_id), "response": resp}
+        except Exception as e:
+            logger.error(f"[bold red]Failed to place order in Kotak Neo:[/bold red] {e}")
+            return {"success": False, "error": str(e)}
+
+    def modify_order(
+        self,
+        order_id: str,
+        price: float,
+        order_type: str,
+        quantity: int,
+        trigger_price: float = 0.0,
+        validity: str = "DAY"
+    ) -> Dict[str, Any]:
+        """Modifies a pending order."""
+        price_str = f"{price:.2f}"
+        trigger_str = f"{trigger_price:.2f}" if trigger_price else "0"
+
+        try:
+            logger.info(
+                f"[bold yellow][LIVE] Modifying Order:[/bold yellow] ID={order_id} | "
+                f"Price={price_str} | Trigger={trigger_str}"
+            )
+            resp = self.client.modify_order(
+                order_id=str(order_id),
+                price=price_str,
+                order_type=order_type,
+                quantity=str(quantity),
+                validity=validity,
+                trigger_price=trigger_str
+            )
+            logger.info(f"Kotak Neo modify_order response: {resp}")
+
+            if not isinstance(resp, dict):
+                return {"success": False, "error": f"Unexpected response: {resp}"}
+
+            if "Error" in resp or "error" in resp or "Error Message" in resp:
+                err_val = resp.get("Error") or resp.get("error") or resp.get("Error Message")
+                return {"success": False, "error": str(err_val), "response": resp}
+
+            stat = resp.get("stat")
+            if stat and stat != "Ok":
+                err_msg = resp.get("errMsg") or stat
+                if resp.get("errMsg") and resp.get("errMsg") != stat:
+                    err_msg = f"{resp.get('errMsg')}: {stat}"
+                return {"success": False, "error": err_msg, "response": resp}
+
+            return {"success": True, "order_id": order_id, "response": resp}
+        except Exception as e:
+            logger.error(f"[bold red]Failed to modify order {order_id}:[/bold red] {e}")
+            return {"success": False, "error": str(e)}
+
+    def cancel_order(self, order_id: str) -> Dict[str, Any]:
+        """Cancels a pending order."""
+        try:
+            logger.info(f"[bold red][LIVE] Cancelling Order:[/bold red] ID={order_id}")
+            resp = self.client.cancel_order(order_id=str(order_id))
+            logger.info(f"Kotak Neo cancel_order response: {resp}")
+
+            if not isinstance(resp, dict):
+                return {"success": False, "error": f"Unexpected response: {resp}"}
+
+            if "Error" in resp or "error" in resp or "Error Message" in resp:
+                err_val = resp.get("Error") or resp.get("error") or resp.get("Error Message")
+                return {"success": False, "error": str(err_val), "response": resp}
+
+            stat = resp.get("stat")
+            if stat and stat != "Ok":
+                err_msg = resp.get("errMsg") or stat
+                if resp.get("errMsg") and resp.get("errMsg") != stat:
+                    err_msg = f"{resp.get('errMsg')}: {stat}"
+                return {"success": False, "error": err_msg, "response": resp}
+
+            return {"success": True, "order_id": order_id, "response": resp}
+        except Exception as e:
+            logger.error(f"[bold red]Failed to cancel order {order_id}:[/bold red] {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_order_status(self, order_id: str) -> Optional[OrderStatus]:
+        """Fetches status of a specific order."""
+        try:
+            report = self.client.order_report(order_id=str(order_id))
+            # Format varies between single order list or dictionary
+            data = report.get("data") if isinstance(report, dict) else report
+            if isinstance(data, list) and len(data) > 0:
+                ord_data = data[0]
+            elif isinstance(data, dict):
+                ord_data = data
+            else:
+                ord_data = report
+
+            raw_st = str(ord_data.get("ordSt", ord_data.get("status", ""))).lower()
+            if "trig" in raw_st:
+                return OrderStatus.TRIGGER_PENDING
+            elif "open" in raw_st:
+                return OrderStatus.OPEN
+            elif "comp" in raw_st or "trad" in raw_st:
+                return OrderStatus.COMPLETE
+            elif "canc" in raw_st:
+                return OrderStatus.CANCELLED
+            elif "rej" in raw_st:
+                return OrderStatus.REJECTED
+            return OrderStatus.PENDING
+        except Exception as e:
+            logger.warning(f"Error fetching status for order {order_id}: {e}")
+            return None
+
+    def get_available_funds(self) -> float:
+        """
+        Fetches available margin / funds from Kotak Neo API.
+        Raises if Kotak does not return available funds.
+        """
+        if not self.client or not self.is_authenticated:
+            raise RuntimeError("Kotak client is not authenticated")
+
+        try:
+            limits = self.client.limits()
+            if isinstance(limits, dict):
+                # Kotak Neo API returns 'Net' or 'AvailableMargin'
+                net = limits.get("Net") or limits.get("AvailableMargin") or limits.get("Cash")
+                if net is not None:
+                    return float(net)
+            raise RuntimeError(f"Kotak limits response did not include available funds: {limits}")
+        except Exception as e:
+            logger.error(f"Failed to fetch available funds from Kotak Neo: {e}")
+            raise RuntimeError("Unable to retrieve live available funds") from e
