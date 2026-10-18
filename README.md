@@ -179,6 +179,14 @@ sudo journalctl -u neo-tel-order-processor -f
 sudo journalctl -u neo-tel-order-processor --since today
 ```
 
+The service is enabled to start at VM boot and restarts if its process exits. It retries every five seconds if Kafka or Kotak is not yet reachable. After stopping the GCP VM outside trading hours, starting the VM again starts this consumer automatically. Check boot configuration with:
+
+```bash
+sudo systemctl is-enabled neo-tel-order-processor
+```
+
+Every consumer VM has its own independent systemd service, even though each VM uses the same service name. For multiple consumer VMs, give each account a unique Kafka group ID if each account should receive every signal; consumers sharing one group split the workload.
+
 Producer logs on its VM:
 
 ```bash
