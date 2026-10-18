@@ -1,0 +1,51 @@
+name: Deploy consumer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-consumer
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.GCP_VM_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.GCP_VM_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Sync consumer files to VM
+        env:
+          VM_HOST: ${{ vars.GCP_VM_HOST }}
+          VM_USER: ${{ vars.GCP_VM_USER }}
+          VM_PORT: ${{ vars.GCP_VM_SSH_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH || '/home/' }}
+        run: |
+          test -n "$VM_HOST" || { echo 'Set repository variable GCP_VM_HOST'; exit 1; }
+          test -n "$VM_USER" || { echo 'Set repository variable GCP_VM_USER'; exit 1; }
+          if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$VM_HOST" "mkdir -p '$DEPLOY_PATH'"
+          rsync -az --delete \
+            --exclude='.git/' \
+            --exclude='.env' --include='.env.example' --exclude='.env.*' \
+            --exclude='.venv/' --exclude='venv/' \
+            --exclude='logs/' --exclude='*.log' \
+            -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT" \
+            ./ "$VM_USER@$VM_HOST:$DEPLOY_PATH/"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$VM_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' bash '$DEPLOY_PATH/deploy/deploy.sh'"
