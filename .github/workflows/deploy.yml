@@ -3,6 +3,10 @@ name: Deploy consumer
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'DEPLOYMENT.md'
+      - '**/*.md'
   workflow_dispatch:
 
 permissions:
