@@ -110,11 +110,15 @@ class KafkaSignalConsumer:
             await self.start()
 
         try:
-            async for msg in self.consumer:
-                if not self._is_running:
-                    break
-
-                await self._process_kafka_message(msg)
+            while self._is_running:
+                messages = await self.consumer.getmany(timeout_ms=1000, max_records=20)
+                for partition_messages in messages.values():
+                    for msg in partition_messages:
+                        await self._process_kafka_message(msg)
+                if not self.on_signal_callback:
+                    # Poll even when Kafka is quiet: staged exits and stop updates
+                    # depend on live order and quote changes.
+                    self.order_manager.manage_open_trades()
         except asyncio.CancelledError:
             logger.info("[yellow]Consumer task cancelled.[/yellow]")
         except Exception as e:

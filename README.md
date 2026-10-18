@@ -103,6 +103,7 @@ Copy `.env.example` to `.env`. Keep credentials only on the VM or in a suitable 
 | `AUTO_CANCEL_ON_REVISE` | Whether a pending order is cancelled when a revised signal arrives. |
 | `RISK_PERCENTAGE` | Optional percentage of capital to risk when a signal includes a stop loss. |
 | `DEFAULT_CAPITAL` | Optional capital amount used by risk sizing. If risk sizing needs capital and this is unset, the app queries available Kotak funds. |
+| `ACTIVE_TRADES_PATH` | Local JSON file used to persist active entry, target, and stop order state; defaults to `runtime/active_trades.json`. |
 | `KAFKA_BOOTSTRAP_SERVERS` | Broker address, such as `10.128.0.10:9092` for a producer VM on the same VPC. |
 | `KAFKA_TOPIC_SIGNALS` | Must match the producer; defaults to `kotak_trading_signals`. |
 | `KAFKA_CONSUMER_GROUP_ID` | Listed in the template as the intended default group. The current `main.py` entry point derives its group from `--group-id` or `--account-id`; the included systemd service therefore uses `kotak_executor_default`. |
@@ -120,7 +121,9 @@ The service installed by the included deployment script starts one default accou
 - `AT` and `LIMIT` signals become limit orders; `MARKET` becomes a market order.
 - The client resolves an exact active contract through Kotak and uses the nearest active expiry unless the signal specifies one. It refuses to guess a symbol when lookup fails.
 - By default, entry size is 3 lots; sizes of 3 or more are rounded down to multiples of 3. If risk-based sizing can support only 1 or 2 lots, that smaller size is allowed and the signal is reduced to the first 1 or 2 targets, respectively. If even 1 lot exceeds the risk or capital limit, the entry is rejected.
-- Pending-order tracking is in memory and is lost when the process restarts. It is not a persistent exchange order ledger.
+- For long option signals with both a stop loss and targets, the consumer polls Kotak fills and the option quote. It places a protective sell stop for filled entry quantity. On target 1, it raises the stop on remaining quantity to the average entry fill; on target 2, it raises it to target 1. Each reached target exits its allocated portion, and active trade state is persisted for restart recovery.
+- Target exits are app-managed because the current Trade API order flow does not expose a linked multi-target OCO order. The consumer resizes the protective stop before placing each target exit; network delays, order rejections, and fast price gaps can still affect execution. Monitor the Kotak order book and logs, especially after a connection or API error.
+- Pending-entry tracking is in memory; active staged-exit state is persisted locally in `ACTIVE_TRADES_PATH`. The state file is not an exchange order ledger, so reconcile it against Kotak after manual order changes or uncertain API results.
 
 ## Deploy to GCP with GitHub Actions
 

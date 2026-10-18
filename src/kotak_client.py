@@ -405,6 +405,58 @@ class KotakClient:
             logger.warning(f"Error fetching status for order {order_id}: {e}")
             return None
 
+    def get_order_details(self, order_id: str) -> Dict[str, Any]:
+        """Return the latest Kotak order fields used to reconcile live fills."""
+        if not self.client or not self.is_authenticated:
+            raise RuntimeError("Kotak client is not authenticated")
+        report = self.client.order_report(order_id=str(order_id))
+        rows = report.get("data") if isinstance(report, dict) else report
+        if isinstance(rows, list):
+            row = next((item for item in rows if str(item.get("nOrdNo", item.get("order_id", ""))) == str(order_id)), None)
+        elif isinstance(rows, dict):
+            row = rows
+        else:
+            row = None
+        if not isinstance(row, dict):
+            raise RuntimeError(f"Kotak returned no order details for {order_id}: {report}")
+        status_text = str(row.get("ordSt", row.get("status", ""))).lower()
+        if "trig" in status_text:
+            status = OrderStatus.TRIGGER_PENDING
+        elif "open" in status_text or "pending" in status_text:
+            status = OrderStatus.OPEN
+        elif "comp" in status_text or "trad" in status_text or "execut" in status_text:
+            status = OrderStatus.COMPLETE
+        elif "canc" in status_text:
+            status = OrderStatus.CANCELLED
+        elif "rej" in status_text:
+            status = OrderStatus.REJECTED
+        else:
+            status = OrderStatus.PENDING
+        filled = row.get("fldQty", row.get("filled_quantity", 0))
+        quantity = row.get("qty", row.get("quantity", 0))
+        average_price = row.get("avgPrc", row.get("average_price", 0))
+        try:
+            filled_quantity = int(float(filled or 0))
+        except (TypeError, ValueError):
+            filled_quantity = 0
+        if status == OrderStatus.COMPLETE and filled_quantity <= 0:
+            try:
+                filled_quantity = int(float(quantity or 0))
+            except (TypeError, ValueError):
+                filled_quantity = 0
+        try:
+            avg_price = float(average_price or 0)
+        except (TypeError, ValueError):
+            avg_price = 0.0
+        return {
+            "status": status,
+            "status_text": status_text,
+            "filled_quantity": filled_quantity,
+            "quantity": int(float(quantity or 0)),
+            "average_price": avg_price,
+            "raw": row,
+        }
+
     def get_available_funds(self) -> float:
         """
         Fetches available margin / funds from Kotak Neo API.

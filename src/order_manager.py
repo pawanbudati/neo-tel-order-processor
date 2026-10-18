@@ -2,6 +2,7 @@ import math
 import uuid
 from typing import Dict, Optional, List, Any
 from datetime import datetime, timezone
+from pathlib import Path
 
 from config.settings import settings
 from src.logger import logger
@@ -14,6 +15,7 @@ from src.models import (
     OrderStatus
 )
 from src.kotak_client import KotakClient
+from src.trade_state_store import TradeStateStore
 
 def round_tick(price: float, tick_size: float = 0.05) -> float:
     """Rounds price to nearest exchange tick size (0.05 for NSE/BSE options)."""
@@ -41,6 +43,11 @@ class OrderManager:
         self.default_product_type = default_product_type or settings.default_product_type
         self.risk_percentage = risk_percentage if risk_percentage is not None else settings.risk_percentage
         self.capital = capital if capital is not None else settings.default_capital
+        state_path = Path(settings.active_trades_path)
+        if account_id != "default":
+            state_path = state_path.with_name(f"{state_path.stem}_{account_id}{state_path.suffix}")
+        self.trade_store = TradeStateStore(str(state_path))
+        self.managed_trades: Dict[str, Dict[str, Any]] = self.trade_store.load()
         # Key: contract_key (e.g., 'NIFTY_22500_CE') -> ActiveOrder
         self.pending_orders_by_contract: Dict[str, ActiveOrder] = {}
         # Key: order_id -> ActiveOrder
@@ -309,6 +316,39 @@ class OrderManager:
 
             self.pending_orders_by_contract[signal.contract_key()] = active_order
             self.orders_by_id[order_id] = active_order
+            if signal.stop_loss and transaction_type in ("BUY", "B"):
+                target_count = min(len(signal.targets), quantity // lot_size)
+                if target_count:
+                    lots_each, extra = divmod(quantity // lot_size, target_count)
+                    target_quantities = [(lots_each + (1 if i < extra else 0)) * lot_size for i in range(target_count)]
+                else:
+                    target_quantities = []
+                self.managed_trades[signal.contract_key()] = {
+                    "contract_key": signal.contract_key(),
+                    "entry_order_id": order_id,
+                    "trading_symbol": trading_symbol,
+                    "exchange_segment": exchange_segment,
+                    "instrument_token": str(sym_info.get("instrument_token", "")),
+                    "product": self.default_product_type,
+                    "entry_quantity": quantity,
+                    "entry_filled": 0,
+                    "entry_average": 0.0,
+                    "entry_reference": float(signal.entry_price or signal.trigger_price or 0.0),
+                    "stop_loss": float(signal.stop_loss),
+                    "targets": [float(x) for x in signal.targets[:target_count]],
+                    "target_quantities": target_quantities,
+                    "target_index": 0,
+                    "open_quantity": 0,
+                    "stop_order_id": None,
+                    "stop_filled": 0,
+                    "stop_quantity": 0,
+                    "stop_price": float(signal.stop_loss),
+                    "pending_exit_id": None,
+                    "pending_exit_quantity": 0,
+                    "pending_exit_filled": 0,
+                    "pending_exit_target": None,
+                }
+                self._save_managed_trades()
             self.last_contract_key = signal.contract_key()
             self.last_order_id = order_id
 
@@ -321,6 +361,216 @@ class OrderManager:
             err = place_resp.get("error", "Order placement failed without error detail")
             logger.error(f"[bold red]Order placement failed:[/bold red] {err}")
             return {"status": "placement_failed", "error": err}
+
+    def _save_managed_trades(self) -> None:
+        self.trade_store.save(self.managed_trades)
+
+    def _place_protective_stop(self, trade: Dict[str, Any], quantity: int) -> Optional[str]:
+        if quantity <= 0:
+            return None
+        stop_price = float(trade["stop_price"])
+        stop_limit = round_tick(stop_price * (1.0 - settings.sl_limit_buffer_percent / 100.0))
+        placement = OrderPlacement(
+            trading_symbol=trade["trading_symbol"],
+            exchange_segment=trade["exchange_segment"],
+            transaction_type="SELL",
+            order_type="SL",
+            quantity=quantity,
+            price=stop_limit,
+            trigger_price=stop_price,
+            product=trade["product"],
+            tag=f"TS{uuid.uuid4().hex[:8].upper()}",
+            contract_key=trade["contract_key"],
+        )
+        response = self.kotak.place_order(placement)
+        if not response.get("success"):
+            logger.error(f"Could not place protective stop for {trade['contract_key']}: {response.get('error')}")
+            return None
+        trade["stop_quantity"] = int(quantity)
+        return str(response["order_id"])
+
+    def _modify_protective_stop(self, trade: Dict[str, Any], quantity: int, stop_price: float) -> bool:
+        order_id = trade.get("stop_order_id")
+        if not order_id:
+            new_id = self._place_protective_stop(trade, quantity)
+            if not new_id:
+                return False
+            trade["stop_order_id"] = new_id
+        else:
+            response = self.kotak.modify_order(
+                order_id=order_id,
+                price=round_tick(stop_price * (1.0 - settings.sl_limit_buffer_percent / 100.0)),
+                order_type="SL",
+                quantity=int(trade.get("stop_filled", 0)) + int(quantity),
+                trigger_price=stop_price,
+            )
+            if not response.get("success"):
+                logger.error(f"Could not update protective stop {order_id}: {response.get('error')}")
+                return False
+        trade["stop_price"] = float(stop_price)
+        trade["stop_quantity"] = int(quantity)
+        return True
+
+    def manage_open_trades(self) -> None:
+        """Reconcile fills and advance staged target/stop logic for open signal trades."""
+        dirty = False
+        for key, trade in list(self.managed_trades.items()):
+            try:
+                entry = self.kotak.get_order_details(trade["entry_order_id"])
+                entry_filled = min(int(entry["filled_quantity"]), int(trade["entry_quantity"]))
+                if entry_filled > int(trade["entry_filled"]):
+                    delta = entry_filled - int(trade["entry_filled"])
+                    trade["entry_filled"] = entry_filled
+                    trade["open_quantity"] = int(trade["open_quantity"]) + delta
+                    if entry.get("average_price", 0) > 0:
+                        trade["entry_average"] = float(entry["average_price"])
+                    dirty = True
+
+                if trade["open_quantity"] <= 0:
+                    if entry["status"] in (OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.COMPLETE):
+                        self.managed_trades.pop(key, None)
+                        dirty = True
+                    continue
+
+                # Ensure filled entry quantity is protected before evaluating targets.
+                if not trade.get("stop_order_id"):
+                    pending_remaining = int(trade.get("pending_exit_quantity", 0)) - int(trade.get("pending_exit_filled", 0))
+                    protect_quantity = max(0, int(trade["open_quantity"]) - pending_remaining)
+                    if protect_quantity > 0:
+                        stop_id = self._place_protective_stop(trade, protect_quantity)
+                        if stop_id:
+                            trade["stop_order_id"] = stop_id
+                            dirty = True
+                        else:
+                            continue
+                else:
+                    stop = self.kotak.get_order_details(trade["stop_order_id"])
+                    stop_filled = int(stop["filled_quantity"])
+                    if stop_filled > int(trade.get("stop_filled", 0)):
+                        trade["open_quantity"] = max(0, int(trade["open_quantity"]) - (stop_filled - int(trade.get("stop_filled", 0))))
+                        trade["stop_filled"] = stop_filled
+                        dirty = True
+                    if trade["open_quantity"] <= 0:
+                        pending_id = trade.get("pending_exit_id")
+                        if pending_id:
+                            self.kotak.cancel_order(pending_id)
+                        self.managed_trades.pop(key, None)
+                        dirty = True
+                        continue
+                    if stop["status"] == OrderStatus.COMPLETE:
+                        pending_id = trade.get("pending_exit_id")
+                        if pending_id:
+                            self.kotak.cancel_order(pending_id)
+                            trade["pending_exit_id"] = None
+                            trade["pending_exit_quantity"] = 0
+                            trade["pending_exit_filled"] = 0
+                            trade["pending_exit_target"] = None
+                        trade["stop_order_id"] = None
+                        trade["stop_filled"] = 0
+                        replacement_id = self._place_protective_stop(trade, int(trade["open_quantity"]))
+                        if not replacement_id:
+                            logger.error(f"Position {key} remains open after stop fill and replacement failed")
+                            continue
+                        trade["stop_order_id"] = replacement_id
+                        dirty = True
+                    elif stop["status"] not in (OrderStatus.CANCELLED, OrderStatus.REJECTED):
+                        pending_remaining = int(trade.get("pending_exit_quantity", 0)) - int(trade.get("pending_exit_filled", 0))
+                        expected_stop_quantity = max(0, int(trade["open_quantity"]) - pending_remaining)
+                        if expected_stop_quantity != int(trade.get("stop_quantity", 0)):
+                            if not self._modify_protective_stop(trade, expected_stop_quantity, float(trade["stop_price"])):
+                                continue
+                            dirty = True
+                    if stop["status"] in (OrderStatus.CANCELLED, OrderStatus.REJECTED):
+                        trade["stop_order_id"] = None
+                        pending_remaining = int(trade.get("pending_exit_quantity", 0)) - int(trade.get("pending_exit_filled", 0))
+                        replacement_quantity = max(0, int(trade["open_quantity"]) - pending_remaining)
+                        replacement_id = self._place_protective_stop(trade, replacement_quantity) if replacement_quantity else None
+                        if replacement_quantity and not replacement_id:
+                            logger.error(f"Position {key} is open without a working stop; reconciliation will retry")
+                            continue
+                        trade["stop_order_id"] = replacement_id
+                        dirty = True
+
+                pending_id = trade.get("pending_exit_id")
+                if pending_id:
+                    exit_order = self.kotak.get_order_details(pending_id)
+                    filled = int(exit_order["filled_quantity"])
+                    delta = max(0, filled - int(trade.get("pending_exit_filled", 0)))
+                    if delta:
+                        trade["open_quantity"] = max(0, int(trade["open_quantity"]) - delta)
+                        trade["pending_exit_filled"] = filled
+                        pending_target = int(trade["pending_exit_target"] or 0)
+                        trade["target_quantities"][pending_target] = max(
+                            0, int(trade["target_quantities"][pending_target]) - delta
+                        )
+                        dirty = True
+                    if exit_order["status"] in (OrderStatus.COMPLETE, OrderStatus.CANCELLED, OrderStatus.REJECTED):
+                        target_idx = int(trade["pending_exit_target"] or 0)
+                        if int(trade["target_quantities"][target_idx]) == 0:
+                            trade["target_index"] = target_idx + 1
+                        # Reconcile stop quantity with the true position after any partial fill.
+                        if trade["open_quantity"] > 0:
+                            covered_quantity = int(trade["open_quantity"])
+                            self._modify_protective_stop(trade, covered_quantity, float(trade["stop_price"]))
+                        trade["pending_exit_id"] = None
+                        trade["pending_exit_quantity"] = 0
+                        trade["pending_exit_filled"] = 0
+                        trade["pending_exit_target"] = None
+                        dirty = True
+                    continue
+
+                target_idx = int(trade["target_index"])
+                if target_idx >= len(trade["targets"]):
+                    continue
+                ltp = self.kotak.get_ltp(trade["instrument_token"], trade["exchange_segment"])
+                target_price = float(trade["targets"][target_idx])
+                if ltp < target_price:
+                    continue
+
+                exit_quantity = min(int(trade["target_quantities"][target_idx]), int(trade["open_quantity"]))
+                remaining_after_exit = int(trade["open_quantity"]) - exit_quantity
+                target_stop = (
+                    float(trade["entry_average"] or trade["entry_reference"])
+                    if target_idx == 0
+                    else float(trade["targets"][target_idx - 1])
+                )
+                if remaining_after_exit > 0:
+                    if not self._modify_protective_stop(trade, remaining_after_exit, target_stop):
+                        continue
+                    dirty = True
+                else:
+                    cancel_resp = self.kotak.cancel_order(trade["stop_order_id"])
+                    if not cancel_resp.get("success"):
+                        logger.error(f"Cannot cancel stop before final target exit for {key}; skipping exit")
+                        continue
+                    trade["stop_order_id"] = None
+
+                exit_response = self.kotak.place_order(OrderPlacement(
+                    trading_symbol=trade["trading_symbol"],
+                    exchange_segment=trade["exchange_segment"],
+                    transaction_type="SELL",
+                    order_type="MKT",
+                    quantity=exit_quantity,
+                    price=0.0,
+                    product=trade["product"],
+                    tag=f"TX{uuid.uuid4().hex[:8].upper()}",
+                    contract_key=key,
+                ))
+                if not exit_response.get("success"):
+                    # Restore the stop quantity if the target exit was rejected.
+                    self._modify_protective_stop(trade, int(trade["open_quantity"]), float(trade["stop_price"]))
+                    dirty = True
+                    continue
+                trade["pending_exit_id"] = str(exit_response["order_id"])
+                trade["pending_exit_quantity"] = exit_quantity
+                trade["pending_exit_filled"] = 0
+                trade["pending_exit_target"] = target_idx
+                dirty = True
+                logger.info(f"Target {target_idx + 1} touched for {key}; exit order {exit_response['order_id']} for {exit_quantity} units")
+            except Exception as exc:
+                logger.error(f"Trade reconciliation failed for {key}: {exc}", exc_info=True)
+        if dirty:
+            self._save_managed_trades()
 
     def _calculate_prices(self, signal: ParsedSignal, sym_info: Optional[Dict[str, Any]] = None):
         """

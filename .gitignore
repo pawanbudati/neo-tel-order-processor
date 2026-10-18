@@ -20,6 +20,7 @@ dist/
 
 # Runtime data, logs, and authentication state
 logs/
+runtime/
 *.log
 *.pid
 *.session

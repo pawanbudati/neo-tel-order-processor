@@ -21,6 +21,7 @@ class Settings(BaseModel):
     auto_cancel_on_revise: bool = Field(default_factory=lambda: os.getenv("AUTO_CANCEL_ON_REVISE", "true").lower() in ("true", "1", "yes"))
     risk_percentage: Optional[float] = Field(default_factory=lambda: float(os.getenv("RISK_PERCENTAGE")) if os.getenv("RISK_PERCENTAGE") else None)
     default_capital: Optional[float] = Field(default_factory=lambda: float(os.getenv("DEFAULT_CAPITAL")) if os.getenv("DEFAULT_CAPITAL") else None)
+    active_trades_path: str = Field(default_factory=lambda: os.getenv("ACTIVE_TRADES_PATH", str(BASE_DIR / "runtime" / "active_trades.json")))
     kafka_bootstrap_servers: str = Field(default_factory=lambda: os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"))
     kafka_topic_signals: str = Field(default_factory=lambda: os.getenv("KAFKA_TOPIC_SIGNALS", "kotak_trading_signals"))
     kafka_consumer_group_id: str = Field(default_factory=lambda: os.getenv("KAFKA_CONSUMER_GROUP_ID", "kotak_executor_default"))
