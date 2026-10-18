@@ -40,6 +40,7 @@ jobs:
           test -n "$VM_USER" || { echo 'Set repository variable GCP_VM_USER'; exit 1; }
           if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
           ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$VM_HOST" "mkdir -p '$DEPLOY_PATH'"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$VM_HOST" 'if ! command -v rsync >/dev/null 2>&1; then if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y rsync; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rsync; elif command -v yum >/dev/null 2>&1; then sudo yum install -y rsync; else echo "No supported package manager found to install rsync" >&2; exit 1; fi; fi'
           rsync -az --delete \
             --exclude='.git/' \
             --exclude='.env' --include='.env.example' --exclude='.env.*' \

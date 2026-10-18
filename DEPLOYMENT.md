@@ -19,7 +19,7 @@ In this repository's **Settings → Secrets and variables → Actions**, add:
 
 `GCP_VM_HOST` and `GCP_VM_USER` can each be stored as either a secret or a variable; the workflow checks both.
 
-The VM needs Python 3 and `rsync`. Restrict SSH ingress to trusted sources where practical. The workflow does not transfer local secrets or generated state.
+The VM needs Python 3 and `sudo` access. If `rsync` is missing, the workflow installs it using the VM's `apt-get`, `dnf`, or `yum` package manager. Restrict SSH ingress to trusted sources where practical. The workflow does not transfer local secrets or generated state.
 
 ## Prepare the VM once
 
