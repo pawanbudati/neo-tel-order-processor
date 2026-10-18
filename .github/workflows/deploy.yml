@@ -31,8 +31,8 @@ jobs:
 
       - name: Sync consumer files to VM
         env:
-          VM_HOST: ${{ vars.GCP_VM_HOST }}
-          VM_USER: ${{ vars.GCP_VM_USER }}
+          VM_HOST: ${{ secrets.GCP_VM_HOST || vars.GCP_VM_HOST }}
+          VM_USER: ${{ secrets.GCP_VM_USER || vars.GCP_VM_USER }}
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH || '/home/' }}
         run: |

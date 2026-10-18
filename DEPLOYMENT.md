@@ -13,10 +13,11 @@ In this repository's **Settings → Secrets and variables → Actions**, add:
 
 **Variables**
 
-- `GCP_VM_HOST`: VM external IP address or DNS name.
 - `GCP_VM_USER`: Linux account matching the public key installed on the VM.
 - `GCP_VM_SSH_PORT`: optional; defaults to `22`.
 - `CONSUMER_DEPLOY_PATH`: optional; defaults to `/home/<GCP_VM_USER>/apps/neo-tel-order-processor`.
+
+`GCP_VM_HOST` and `GCP_VM_USER` can each be stored as either a secret or a variable; the workflow checks both.
 
 The VM needs Python 3 and `rsync`. Restrict SSH ingress to trusted sources where practical. The workflow does not transfer local secrets or generated state.
 
