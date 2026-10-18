@@ -98,7 +98,7 @@ Copy `.env.example` to `.env`. Keep credentials only on the VM or in a suitable 
 | `KOTAK_MPIN` | Kotak Neo MPIN. Required and highly sensitive. |
 | `KOTAK_ENVIRONMENT` | Broker API environment; sample defaults to `prod`. |
 | `DEFAULT_PRODUCT_TYPE` | Default product, `MIS` or `NRML`; sample uses `MIS`. |
-| `DEFAULT_LOTS` | Default number of lots when risk sizing is not active; sample uses `1`. |
+| `DEFAULT_LOTS` | Default number of lots when risk sizing is not active; sample uses `3`. Requests of 3 or more lots are rounded down to a multiple of 3; 1-2 lot requests are retained. |
 | `SL_LIMIT_BUFFER_PERCENT` | Price buffer used for stop-limit orders. |
 | `AUTO_CANCEL_ON_REVISE` | Whether a pending order is cancelled when a revised signal arrives. |
 | `RISK_PERCENTAGE` | Optional percentage of capital to risk when a signal includes a stop loss. |
@@ -119,7 +119,7 @@ The service installed by the included deployment script starts one default accou
 - If the live quote needed for a buy `ABOVE` signal is unavailable or invalid, order placement fails closed instead of guessing.
 - `AT` and `LIMIT` signals become limit orders; `MARKET` becomes a market order.
 - The client resolves an exact active contract through Kotak and uses the nearest active expiry unless the signal specifies one. It refuses to guess a symbol when lookup fails.
-- If both `RISK_PERCENTAGE` and a stop loss are supplied, quantity is based on risk and available capital. Otherwise quantity uses `DEFAULT_LOTS` times the contract lot size.
+- By default, entry size is 3 lots; sizes of 3 or more are rounded down to multiples of 3. If risk-based sizing can support only 1 or 2 lots, that smaller size is allowed and the signal is reduced to the first 1 or 2 targets, respectively. If even 1 lot exceeds the risk or capital limit, the entry is rejected.
 - Pending-order tracking is in memory and is lost when the process restarts. It is not a persistent exchange order ledger.
 
 ## Deploy to GCP with GitHub Actions

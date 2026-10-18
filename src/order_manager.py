@@ -263,6 +263,15 @@ class OrderManager:
         # Calculate quantity dynamically based on resolved scrip lot size and risk percentage
         lot_size = sym_info["lot_size"]
         quantity = self.calculate_order_quantity(signal=signal, entry_price=price, lot_size=lot_size)
+        if quantity <= 0:
+            return {
+                "status": "placement_failed",
+                "error": "Available risk/capital cannot support even 1 lot; no order was sent",
+            }
+        lots_to_trade = quantity // lot_size
+        if signal.targets:
+            signal.targets = signal.targets[:lots_to_trade]
+            signal.target = signal.targets[0] if signal.targets else None
 
         # Generate unique tag to satisfy Kotak Neo OMS unique Client Order ID constraint
         unique_tag = f"TG{uuid.uuid4().hex[:8].upper()}"
@@ -385,7 +394,7 @@ class OrderManager:
 
         # Fallback to default lot size if risk_percentage or SL is not specified
         if not self.risk_percentage or signal.stop_loss is None or signal.stop_loss <= 0:
-            lots = max(1, self.default_lots)
+            lots = self._round_lots_to_multiple_of_three(self.default_lots)
             logger.debug(f"{acc_tag}Position sizing using default lots: {lots} ({lots * lot_size} qty)")
             return lots * lot_size
 
@@ -407,9 +416,9 @@ class OrderManager:
         if points_at_risk <= 0:
             logger.warning(
                 f"{acc_tag}Invalid SL for position sizing (entry={effective_entry}, SL={signal.stop_loss}). "
-                f"Falling back to default {self.default_lots} lot(s)."
+                f"Falling back to default {self._round_lots_to_multiple_of_three(self.default_lots)} lot(s)."
             )
-            return max(1, self.default_lots) * lot_size
+            return self._round_lots_to_multiple_of_three(self.default_lots) * lot_size
 
         max_risk_amount = capital * (self.risk_percentage / 100.0)
         risk_per_lot = points_at_risk * lot_size
@@ -421,18 +430,19 @@ class OrderManager:
 
         if lots_by_capital < 1:
             logger.warning(
-                f"{acc_tag}Available capital (₹{capital:.2f}) cannot afford 1 lot (cost: ₹{premium_per_lot:.2f}). "
-                f"Setting to 1 lot."
+                f"{acc_tag}Available capital (₹{capital:.2f}) cannot afford even 1 lot "
+                f"(cost: ₹{premium_per_lot:.2f}); refusing the trade."
             )
-            optimal_lots = 1
+            return 0
         elif lots_by_risk < 1:
             logger.info(
-                f"{acc_tag}Risk calculation yielded < 1 lot (Max risk ₹{max_risk_amount:.2f} < Lot risk ₹{risk_per_lot:.2f}). "
-                f"Setting to default 1 lot."
+                f"{acc_tag}Risk budget cannot support even 1 lot "
+                f"(max risk ₹{max_risk_amount:.2f}, risk per lot ₹{risk_per_lot:.2f}); refusing the trade."
             )
-            optimal_lots = 1
+            return 0
         else:
-            optimal_lots = min(lots_by_risk, lots_by_capital)
+            affordable_lots = min(lots_by_risk, lots_by_capital)
+            optimal_lots = affordable_lots if affordable_lots < 3 else (affordable_lots // 3) * 3
 
         total_quantity = optimal_lots * lot_size
 
@@ -444,6 +454,12 @@ class OrderManager:
             f"[bold green]Selected: {optimal_lots} lot(s) ({total_quantity} qty)[/bold green]"
         )
         return total_quantity
+
+    @staticmethod
+    def _round_lots_to_multiple_of_three(lots: int) -> int:
+        """Keep 1-2 lot requests; round larger requests down to a multiple of three."""
+        requested = max(1, int(lots))
+        return requested if requested < 3 else (requested // 3) * 3
 
     def _cancel_existing_same_index_pending_orders(self, signal: ParsedSignal):
         """
@@ -490,3 +506,5 @@ class OrderManager:
             del self.pending_orders_by_contract[order.contract_key]
         if self.last_order_id == order.order_id:
             self.last_order_id = None
+
+

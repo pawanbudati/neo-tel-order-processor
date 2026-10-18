@@ -16,7 +16,7 @@ class Settings(BaseModel):
     kotak_mpin: str = Field(default_factory=lambda: os.getenv("KOTAK_MPIN", ""))
     kotak_environment: str = Field(default_factory=lambda: os.getenv("KOTAK_ENVIRONMENT", "prod"))
     default_product_type: str = Field(default_factory=lambda: os.getenv("DEFAULT_PRODUCT_TYPE", "MIS").upper())
-    default_lots: int = Field(default_factory=lambda: int(os.getenv("DEFAULT_LOTS", "1")))
+    default_lots: int = Field(default_factory=lambda: int(os.getenv("DEFAULT_LOTS", "3")))
     sl_limit_buffer_percent: float = Field(default_factory=lambda: float(os.getenv("SL_LIMIT_BUFFER_PERCENT", "1.0")))
     auto_cancel_on_revise: bool = Field(default_factory=lambda: os.getenv("AUTO_CANCEL_ON_REVISE", "true").lower() in ("true", "1", "yes"))
     risk_percentage: Optional[float] = Field(default_factory=lambda: float(os.getenv("RISK_PERCENTAGE")) if os.getenv("RISK_PERCENTAGE") else None)

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,7 @@ class ParsedSignal(BaseModel):
     trigger_price: Optional[float] = Field(default=None, description="Trigger price if stop loss or breakout")
     stop_loss: Optional[float] = Field(default=None, description="Stop loss price if specified")
     target: Optional[float] = Field(default=None, description="Target price if specified")
+    targets: List[float] = Field(default_factory=list, description="Ordered partial-exit target prices")
     target_expiry: Optional[str] = Field(default=None, description="Target expiry if specified")
     reasoning: Optional[str] = Field(default="", description="Reasoning / explanation by Gemini")
     raw_message: Optional[str] = Field(default="", description="Raw telegram message text")
@@ -88,7 +89,7 @@ class KotakAccountConfig(BaseModel):
     totp_key: Optional[str] = Field(default="", description="Base32 TOTP secret key for 2FA")
     mpin: str = Field(default="", description="Kotak Neo MPIN")
     environment: str = Field(default="prod", description="Kotak environment (prod/uat)")
-    default_lots: int = Field(default=1, description="Default lot multiplier for this account")
+    default_lots: int = Field(default=3, description="Default lots; entry order sizes use multiples of three lots")
     default_product_type: str = Field(default="MIS", description="Default product type: MIS or NRML")
     risk_percentage: Optional[float] = Field(default=None, description="Max percentage of capital to risk per trade if SL is hit")
     capital: Optional[float] = Field(default=None, description="Available capital for risk calculations in INR")
