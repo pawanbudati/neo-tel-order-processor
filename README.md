@@ -114,7 +114,9 @@ The service installed by the included deployment script starts one default accou
 
 ### Order behavior
 
-- `ABOVE` and `BELOW` signals are converted to stop-limit orders using `SL_LIMIT_BUFFER_PERCENT`.
+- A buy `ABOVE` signal checks the resolved option contract's live Kotak LTP: below the trigger it places an SL-LMT order, with the limit price buffered by `SL_LIMIT_BUFFER_PERCENT`; at or above the trigger it places a market order.
+- A buy `BELOW` signal places a limit order at the stated entry price. It does not place a stop order.
+- If the live quote needed for a buy `ABOVE` signal is unavailable or invalid, order placement fails closed instead of guessing.
 - `AT` and `LIMIT` signals become limit orders; `MARKET` becomes a market order.
 - The client resolves an exact active contract through Kotak and uses the nearest active expiry unless the signal specifies one. It refuses to guess a symbol when lookup fails.
 - If both `RISK_PERCENTAGE` and a stop loss are supplied, quantity is based on risk and available capital. Otherwise quantity uses `DEFAULT_LOTS` times the contract lot size.

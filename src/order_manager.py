@@ -180,7 +180,28 @@ class OrderManager:
             return self._handle_new_order(signal)
 
         # Calculate new price and trigger
-        new_trigger, new_price, new_order_type = self._calculate_prices(signal)
+        try:
+            sym_info = None
+            if signal.index and signal.strike_price:
+                sym_info = self.kotak.resolve_symbol(
+                    index=signal.index,
+                    strike=signal.strike_price,
+                    option_type=signal.option_type or "CE",
+                    expiry=signal.target_expiry,
+                )
+            new_trigger, new_price, new_order_type = self._calculate_prices(signal, sym_info)
+        except Exception as exc:
+            logger.error(f"Cannot safely calculate revised order prices: {exc}")
+            return {"status": "modification_failed", "error": str(exc)}
+
+        # Some brokers do not allow changing a pending SL order into a market order.
+        # Cancel it first, then submit a fresh order using a new live quote decision.
+        if new_order_type == "MKT" and target_order.order_type != "MKT":
+            cancel_resp = self.kotak.cancel_order(target_order.order_id)
+            if not cancel_resp.get("success"):
+                return {"status": "modification_failed", "error": cancel_resp.get("error", "Could not cancel pending order")}
+            self._remove_from_pending(target_order)
+            return self._handle_new_order(signal)
 
         logger.info(
             f"[bold yellow]Modifying pending order:[/bold yellow] ID={target_order.order_id} | "
@@ -233,7 +254,11 @@ class OrderManager:
         exchange_segment = sym_info["exchange_segment"]
 
         # Calculate price & trigger first to determine effective entry price for sizing
-        trigger_price, price, order_type = self._calculate_prices(signal)
+        try:
+            trigger_price, price, order_type = self._calculate_prices(signal, sym_info)
+        except Exception as exc:
+            logger.error(f"Cannot determine safe order prices: {exc}")
+            return {"status": "placement_failed", "error": str(exc)}
 
         # Calculate quantity dynamically based on resolved scrip lot size and risk percentage
         lot_size = sym_info["lot_size"]
@@ -288,12 +313,36 @@ class OrderManager:
             logger.error(f"[bold red]Order placement failed:[/bold red] {err}")
             return {"status": "placement_failed", "error": err}
 
-    def _calculate_prices(self, signal: ParsedSignal):
+    def _calculate_prices(self, signal: ParsedSignal, sym_info: Optional[Dict[str, Any]] = None):
         """
         Determines trigger_price, limit_price, and order_type (SL vs L vs MKT).
         """
         buffer_pct = settings.sl_limit_buffer_percent / 100.0
         cond = signal.order_condition or OrderCondition.ABOVE
+        action = (signal.action or "BUY").upper()
+
+        if action in ("BUY", "B") and cond == OrderCondition.ABOVE:
+            trigger = float(signal.trigger_price or signal.entry_price or 0.0)
+            if trigger <= 0:
+                raise ValueError("Buy-above signal is missing a positive trigger price")
+            if not sym_info:
+                raise RuntimeError("Cannot check current price without resolved contract details")
+            ltp = self.kotak.get_ltp(
+                instrument_token=sym_info.get("instrument_token", ""),
+                exchange_segment=sym_info["exchange_segment"],
+            )
+            if ltp >= trigger:
+                logger.info(f"Buy-above trigger already crossed (LTP={ltp}, trigger={trigger}); using market order")
+                return 0.0, 0.0, "MKT"
+            limit_price = round_tick(trigger * (1.0 + buffer_pct))
+            logger.info(f"Buy-above trigger not reached (LTP={ltp}, trigger={trigger}); using SL-LMT")
+            return trigger, limit_price, "SL"
+
+        if action in ("BUY", "B") and cond == OrderCondition.BELOW:
+            limit_price = round_tick(float(signal.entry_price or signal.trigger_price or 0.0))
+            if limit_price <= 0:
+                raise ValueError("Buy-below signal is missing a positive limit price")
+            return 0.0, limit_price, "L"
 
         if cond == OrderCondition.ABOVE:
             trigger = float(signal.trigger_price or signal.entry_price or 0.0)

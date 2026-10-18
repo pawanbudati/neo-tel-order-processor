@@ -186,7 +186,8 @@ class KotakClient:
                         res_dict = {
                             "trading_symbol": matched_symbol,
                             "exchange_segment": exchange_segment,
-                            "lot_size": int(lot_size)
+                            "lot_size": int(lot_size),
+                            "instrument_token": str(chosen.get("pSymbol") or "")
                         }
                         logger.info(
                             f"Resolved scrip via Kotak search: {matched_symbol} "
@@ -198,6 +199,36 @@ class KotakClient:
                 logger.error(f"Kotak scrip lookup failed for {idx} {strike_int} {opt}: {e}")
                 raise RuntimeError("Unable to resolve a live Kotak contract; refusing to guess a trading symbol") from e
         raise RuntimeError("Kotak client is not authenticated; live execution is unavailable")
+
+    def get_ltp(self, instrument_token: str, exchange_segment: str) -> float:
+        """Fetches the latest traded price for a resolved contract; never returns a stale/default price."""
+        if not self.client or not self.is_authenticated:
+            raise RuntimeError("Kotak client is not authenticated; cannot fetch live LTP")
+        if not instrument_token:
+            raise RuntimeError("Resolved Kotak contract has no instrument token; cannot fetch live LTP")
+
+        response = self.client.quotes(
+            instrument_tokens=[{
+                "instrument_token": str(instrument_token),
+                "exchange_segment": exchange_segment,
+            }],
+            quote_type="ltp",
+        )
+        if isinstance(response, list):
+            quotes = response
+        elif isinstance(response, dict):
+            quotes = response.get("data")
+        else:
+            quotes = None
+        if not isinstance(quotes, list) or not quotes:
+            raise RuntimeError(f"Kotak returned no LTP quote for token {instrument_token}: {response}")
+        try:
+            ltp = float(quotes[0]["ltp"])
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            raise RuntimeError(f"Kotak returned an invalid LTP quote for token {instrument_token}: {response}") from exc
+        if ltp <= 0:
+            raise RuntimeError(f"Kotak returned a non-positive LTP for token {instrument_token}: {ltp}")
+        return ltp
 
     def place_order(self, order: OrderPlacement) -> Dict[str, Any]:
         """Places a new order (SL, Limit, or Market)."""

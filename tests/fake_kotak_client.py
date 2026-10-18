@@ -23,7 +23,12 @@ class FakeKotakClient:
             "trading_symbol": f"{idx}26OCT{int(strike)}{option_type.upper()}",
             "exchange_segment": segment,
             "lot_size": lot_sizes[idx],
+            "instrument_token": "test-token",
         }
+
+    def get_ltp(self, instrument_token, exchange_segment):
+        # Keep existing test signals below their trigger unless a test overrides this method.
+        return 1.0
 
     def place_order(self, order):
         order_id = str(self.next_order_id)
