@@ -37,4 +37,6 @@ After the first workflow run, inspect logs with:
 sudo journalctl -u neo-tel-order-processor -f
 ```
 
+Use `sudo systemctl status neo-tel-order-processor` to check service state, or `sudo journalctl -u neo-tel-order-processor --since today` to review today's logs. Producer logs are available with `sudo journalctl -u neo-tel-signal-producer -f`; Kafka container logs on the producer VM use `sudo docker logs -f trading-kafka`.
+
 Protect `main` if deployments should happen only after review. A consumer restart clears its in-memory pending-order tracking, and the consumer can place live orders after it reconnects. Review the timing of updates accordingly.
