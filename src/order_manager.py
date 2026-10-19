@@ -651,7 +651,16 @@ class OrderManager:
         # Resolve capital (from self.capital or live Kotak funds)
         capital = self.capital
         if capital is None or capital <= 0:
-            capital = self.kotak.get_available_funds()
+            try:
+                capital = self.kotak.get_available_funds()
+            except Exception as e:
+                fallback_lots = self._round_lots_to_multiple_of_three(self.default_lots)
+                logger.error(
+                    f"{acc_tag}Failed to retrieve live Kotak available funds for risk sizing ({e}). "
+                    f"Falling back to default {fallback_lots} lot(s) ({fallback_lots * lot_size} qty) "
+                    f"to prevent order placement failure."
+                )
+                return fallback_lots * lot_size
 
         effective_entry = float(signal.entry_price or entry_price or 0.0)
         if effective_entry <= 0:

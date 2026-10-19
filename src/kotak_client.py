@@ -457,22 +457,142 @@ class KotakClient:
             "raw": row,
         }
 
+    @staticmethod
+    def _is_session_expired(response: Any) -> bool:
+        """Detects if response indicates an expired or invalid session token."""
+        if isinstance(response, dict):
+            err_msg = str(
+                response.get("Error Message")
+                or response.get("error")
+                or response.get("Error")
+                or response.get("message")
+                or response.get("errMsg")
+                or ""
+            ).lower()
+            if any(term in err_msg for term in ("2fa", "session", "token", "unauthorized", "login", "forbidden", "authenticate")):
+                return True
+            stat = str(response.get("stat") or "").lower()
+            if stat in ("not_ok", "error", "failed") and any(term in err_msg for term in ("auth", "session", "token", "invalid", "expired")):
+                return True
+        return False
+
+    @staticmethod
+    def _extract_funds_from_limits(limits: Any) -> Optional[float]:
+        """
+        Extracts available trading funds/margin from Kotak Neo limits API response.
+        Supports:
+        - Dict with top-level fields (Net, AvailableMargin, Cash, CollateralValue, etc.)
+        - Dict with 'data' wrapping a dict or a list
+        - List of segment limit dicts (prioritizing FO / ALL / CASH)
+        - Numeric strings with commas or floats
+        """
+        if limits is None:
+            return None
+
+        candidates = [
+            "Net", "net",
+            "AvailableMargin", "availableMargin", "available_margin",
+            "availableBalance", "available_balance",
+            "Cash", "cash", "cshBal",
+            "marginAvailable", "MarginAvailable",
+            "netAllocated", "NetAllocated",
+            "curFund",
+            "CollateralValue", "collateralValue",
+            "AdhocMargin", "adhocMargin",
+        ]
+
+        records: List[Dict[str, Any]] = []
+
+        if isinstance(limits, list):
+            records = [r for r in limits if isinstance(r, dict)]
+        elif isinstance(limits, dict):
+            # Check if there is a nested data structure
+            data = limits.get("data")
+            if isinstance(data, list):
+                records.extend([r for r in data if isinstance(r, dict)])
+            elif isinstance(data, dict):
+                inner_limits = data.get("limits")
+                if isinstance(inner_limits, list):
+                    records.extend([r for r in inner_limits if isinstance(r, dict)])
+                elif isinstance(inner_limits, dict):
+                    records.append(inner_limits)
+                records.append(data)
+            records.append(limits)
+
+        if not records:
+            return None
+
+        # Prioritize FO or ALL segment records if present
+        def segment_priority(rec: Dict[str, Any]) -> int:
+            seg = str(rec.get("segment") or rec.get("seg") or "").upper().strip()
+            if seg in ("FO", "NSE_FO", "BSE_FO"):
+                return 0
+            if seg == "ALL":
+                return 1
+            if seg == "CASH":
+                return 2
+            return 3
+
+        sorted_records = sorted(records, key=segment_priority)
+
+        for rec in sorted_records:
+            for key in candidates:
+                if key in rec and rec[key] is not None:
+                    raw_val = str(rec[key]).replace(",", "").strip()
+                    if raw_val != "":
+                        try:
+                            return float(raw_val)
+                        except (ValueError, TypeError):
+                            continue
+
+        return None
+
     def get_available_funds(self) -> float:
         """
         Fetches available margin / funds from Kotak Neo API.
-        Raises if Kotak does not return available funds.
+        If the session has expired or requires 2FA re-validation, attempts to re-authenticate and retry.
+        Raises RuntimeError if Kotak does not return available funds.
         """
-        if not self.client or not self.is_authenticated:
-            raise RuntimeError("Kotak client is not authenticated")
+        acc_tag = f"[{self.account_id}] " if self.account_id != "default" else ""
 
-        try:
-            limits = self.client.limits()
-            if isinstance(limits, dict):
-                # Kotak Neo API returns 'Net' or 'AvailableMargin'
-                net = limits.get("Net") or limits.get("AvailableMargin") or limits.get("Cash")
-                if net is not None:
-                    return float(net)
-            raise RuntimeError(f"Kotak limits response did not include available funds: {limits}")
-        except Exception as e:
-            logger.error(f"Failed to fetch available funds from Kotak Neo: {e}")
-            raise RuntimeError("Unable to retrieve live available funds") from e
+        if not self.client or not self.is_authenticated:
+            logger.info(f"{acc_tag}Kotak client not authenticated when fetching funds; authenticating now...")
+            self._init_live_client()
+
+        for attempt in range(2):
+            try:
+                limits = self.client.limits()
+                logger.debug(f"{acc_tag}Kotak limits raw response: {limits}")
+
+                # Check if Kotak returned a session/auth expiration error
+                if self._is_session_expired(limits):
+                    if attempt == 0:
+                        logger.warning(
+                            f"{acc_tag}Kotak session appears expired or unauthenticated ({limits}). "
+                            f"Re-authenticating and retrying limits..."
+                        )
+                        self._init_live_client()
+                        continue
+                    else:
+                        raise RuntimeError(f"Kotak session expired and re-authentication failed: {limits}")
+
+                funds = self._extract_funds_from_limits(limits)
+                if funds is not None:
+                    logger.info(f"{acc_tag}Retrieved live available funds from Kotak Neo: ₹{funds:,.2f}")
+                    return funds
+
+                logger.error(f"{acc_tag}Kotak limits response format unrecognized. Raw payload: {limits}")
+                raise RuntimeError(f"Kotak limits response did not include available funds: {limits}")
+
+            except Exception as e:
+                if attempt == 0 and any(k in str(e).lower() for k in ("401", "unauthorized", "session", "token")):
+                    logger.warning(f"{acc_tag}Limits call failed with auth error ({e}). Re-authenticating...")
+                    try:
+                        self._init_live_client()
+                        continue
+                    except Exception as reauth_err:
+                        logger.error(f"{acc_tag}Re-authentication failed: {reauth_err}")
+                logger.error(f"{acc_tag}Failed to fetch available funds from Kotak Neo: {e}")
+                raise RuntimeError(f"Unable to retrieve live available funds: {e}") from e
+
+        raise RuntimeError("Unable to retrieve live available funds after retry")
