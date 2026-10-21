@@ -9,7 +9,9 @@ async def run(args):
     from src.kafka.consumer import KafkaSignalConsumer
     from src.kotak_client import KotakClient
     from src.order_manager import OrderManager
+    from src.notifier import notifier
     account_id = args.account_id
+    notifier.notify_startup(account_id)
     group_id = args.group_id or f"kotak_executor_{account_id}"
     manager = OrderManager(
         kotak_client=KotakClient(),

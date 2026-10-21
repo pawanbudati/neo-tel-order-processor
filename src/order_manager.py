@@ -16,6 +16,7 @@ from src.models import (
 )
 from src.kotak_client import KotakClient
 from src.trade_state_store import TradeStateStore
+from src.notifier import notifier
 
 def round_tick(price: float, tick_size: float = 0.05) -> float:
     """Rounds price to nearest exchange tick size (0.05 for NSE/BSE options)."""
@@ -356,10 +357,21 @@ class OrderManager:
                 f"[bold green]New order tracked successfully:[/bold green] ID={order_id} | "
                 f"Symbol={trading_symbol} | Qty={quantity} | Trigger={trigger_price} | Price={price}"
             )
+            notifier.notify_order_placed(
+                order_id=order_id,
+                symbol=trading_symbol,
+                action=transaction_type,
+                quantity=quantity,
+                price=price,
+                trigger_price=trigger_price,
+                stop_loss=signal.stop_loss,
+                targets=signal.targets,
+            )
             return {"status": "placed", "order_id": order_id, "trading_symbol": trading_symbol, "quantity": quantity}
         else:
             err = place_resp.get("error", "Order placement failed without error detail")
             logger.error(f"[bold red]Order placement failed:[/bold red] {err}")
+            notifier.notify_order_failed(symbol=trading_symbol, error=str(err))
             return {"status": "placement_failed", "error": err}
 
     def _save_managed_trades(self) -> None:
