@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import os
 
 from src.logger import logger
 
@@ -36,7 +37,7 @@ async def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Kotak Neo Kafka signal executor")
-    parser.add_argument("--account-id", default="default")
+    parser.add_argument("--account-id", default=os.getenv("ACCOUNT_ID", "default"))
     parser.add_argument("--group-id", help="Unique group per account to receive every signal")
     parser.add_argument("--env-file", default=None, help="Path to custom .env file for this account")
     parser.add_argument("--kafka-servers", default=None)
