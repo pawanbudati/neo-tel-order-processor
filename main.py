@@ -2,6 +2,11 @@
 import argparse
 import asyncio
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 from src.logger import logger
 
@@ -13,7 +18,7 @@ async def run(args):
     from src.notifier import notifier
     account_id = args.account_id
     notifier.notify_startup(account_id)
-    group_id = args.group_id or f"kotak_executor_{account_id}"
+    group_id = args.group_id or os.getenv("KAFKA_CONSUMER_GROUP_ID") or f"kotak_executor_{account_id}"
     manager = OrderManager(
         kotak_client=KotakClient(account_id=account_id),
         account_id=account_id,
