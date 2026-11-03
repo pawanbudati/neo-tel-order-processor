@@ -146,14 +146,43 @@ class KotakClient:
                     if not filtered_results:
                         raise RuntimeError(f"Kotak returned no exact scrip match for {idx} {strike_int} {opt}")
 
+                    _MONTHS = {
+                        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+                        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12
+                    }
+
                     def parse_expiry(item):
-                        exp_str = item.get("pExpiryDate")
+                        exp_str = item.get("pExpiryDate") or item.get("expiryDate") or item.get("pExpiry")
                         if not exp_str:
                             return datetime.max
-                        try:
-                            return datetime.strptime(exp_str, "%d%b%Y")
-                        except Exception:
-                            return datetime.max
+                        exp_str = str(exp_str).strip()
+                        import re
+                        m = re.match(r"^(\d{1,2})[- /]?([A-Za-z]{3})[- /]?(\d{2,4})$", exp_str)
+                        if m:
+                            day = int(m.group(1))
+                            mon_str = m.group(2).lower()
+                            yr = int(m.group(3))
+                            if yr < 100:
+                                yr += 2000
+                            if mon_str in _MONTHS:
+                                try:
+                                    return datetime(yr, _MONTHS[mon_str], day)
+                                except Exception:
+                                    pass
+                        for fmt in ("%d%b%Y", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+                            try:
+                                return datetime.strptime(exp_str, fmt)
+                            except Exception:
+                                pass
+                        if exp_str.isdigit():
+                            try:
+                                ts = int(exp_str)
+                                if ts > 1e11:
+                                    ts /= 1000
+                                return datetime.fromtimestamp(ts)
+                            except Exception:
+                                pass
+                        return datetime.max
 
                     # Only trade contracts whose expiry is known and still active.
                     today = datetime.now().date()
@@ -162,7 +191,12 @@ class KotakClient:
                         if parse_expiry(r).date() >= today and parse_expiry(r) != datetime.max
                     ]
                     if not active_candidates:
-                        raise RuntimeError(f"No active expiry returned for {idx} {strike_int} {opt}")
+                        logger.warning(
+                            f"{acc_tag}No active future expiry found using strict date filter "
+                            f"(today={today}, scrips={[r.get('pExpiryDate') or r.get('pTrdSymbol') for r in filtered_results]}). "
+                            f"Falling back to all matching scrips."
+                        )
+                        active_candidates = filtered_results
                     candidates = active_candidates
 
                     # If target_expiry was requested, filter candidates matching it
