@@ -20,10 +20,11 @@ class KotakClient:
 
     def __init__(
         self,
-        account_config: Optional[KotakAccountConfig] = None
+        account_config: Optional[KotakAccountConfig] = None,
+        account_id: Optional[str] = None
     ):
         self.account_config = account_config
-        self.account_id = account_config.account_id if account_config else "default"
+        self.account_id = account_id or (account_config.account_id if account_config else "default")
 
         if account_config:
             self.consumer_key = account_config.consumer_key
