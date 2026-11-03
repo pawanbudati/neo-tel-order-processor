@@ -205,6 +205,7 @@ def test_risk_sizing_fallback_without_sl():
     assert res["status"] == "placed"
     assert res["quantity"] == 65  # Default 1 lot
 
+
 def test_risk_sizing_fallback_without_risk_percentage():
     """
     If risk_percentage is None, fallback to default_lots (1 lot).
@@ -222,3 +223,23 @@ def test_risk_sizing_fallback_without_risk_percentage():
 
     assert res["status"] == "placed"
     assert res["quantity"] == 65  # Default 1 lot
+
+
+def test_default_lots_none_handles_cleanly():
+    """
+    Ensure passing default_lots=None (e.g. from CLI parser when --lots is omitted)
+    does not raise TypeError: int() argument must be a string... not 'NoneType'.
+    """
+    client = FakeKotakClient()
+    mgr = OrderManager(
+        kotak_client=client,
+        default_lots=None,
+        risk_percentage=None,
+        capital=None
+    )
+
+    sig = make_signal("NIFTY", 23700.0, "CE", price=28.0, sl=None)
+    res = mgr.process_signal(sig)
+
+    assert res["status"] == "placed"
+    assert res["quantity"] == 65 * 3  # 3 lots default

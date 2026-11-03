@@ -42,7 +42,10 @@ class OrderManager:
     ):
         self.account_id = account_id
         self.kotak = kotak_client or KotakClient()
-        self.default_lots = settings.default_lots if default_lots is _UNSET else default_lots
+        if default_lots is _UNSET or default_lots is None:
+            self.default_lots = settings.default_lots or 3
+        else:
+            self.default_lots = default_lots
         self.default_product_type = default_product_type or settings.default_product_type
         self.risk_percentage = settings.risk_percentage if risk_percentage is _UNSET else risk_percentage
         self.capital = settings.default_capital if capital is _UNSET else capital
@@ -937,9 +940,14 @@ class OrderManager:
         return total_quantity
 
     @staticmethod
-    def _round_lots_to_multiple_of_three(lots: int) -> int:
+    def _round_lots_to_multiple_of_three(lots: Optional[int]) -> int:
         """Keep 1-2 lot requests; round larger requests down to a multiple of three."""
-        requested = max(1, int(lots))
+        if lots is None:
+            return 3
+        try:
+            requested = max(1, int(lots))
+        except (TypeError, ValueError):
+            return 3
         return requested if requested < 3 else (requested // 3) * 3
 
     def _cancel_existing_same_index_pending_orders(self, signal: ParsedSignal):
