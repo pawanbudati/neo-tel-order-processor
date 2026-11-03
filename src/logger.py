@@ -3,7 +3,18 @@ import sys
 from rich.console import Console
 from rich.logging import RichHandler
 
-console = Console()
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+console = Console(force_terminal=True)
 
 def setup_logger(name: str = "kotak_trader", level: int = logging.INFO) -> logging.Logger:
     """Configures and returns a rich console logger."""
