@@ -5,8 +5,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-env_file_path = os.getenv("ENV_FILE") or (BASE_DIR / ".env")
-load_dotenv(env_file_path)
+load_dotenv(BASE_DIR / ".env")
 
 
 class Settings(BaseModel):
