@@ -22,6 +22,8 @@ def round_tick(price: float, tick_size: float = 0.05) -> float:
     """Rounds price to nearest exchange tick size (0.05 for NSE/BSE options)."""
     return round(round(price / tick_size) * tick_size, 2)
 
+_UNSET = object()
+
 class OrderManager:
     """
     Manages order lifecycle, tracking pending limit/SL orders,
@@ -33,17 +35,17 @@ class OrderManager:
         self,
         kotak_client: Optional[KotakClient] = None,
         account_id: str = "default",
-        default_lots: Optional[int] = None,
+        default_lots: Any = _UNSET,
         default_product_type: Optional[str] = None,
-        risk_percentage: Optional[float] = None,
-        capital: Optional[float] = None
+        risk_percentage: Any = _UNSET,
+        capital: Any = _UNSET
     ):
         self.account_id = account_id
         self.kotak = kotak_client or KotakClient()
-        self.default_lots = default_lots if default_lots is not None else settings.default_lots
+        self.default_lots = settings.default_lots if default_lots is _UNSET else default_lots
         self.default_product_type = default_product_type or settings.default_product_type
-        self.risk_percentage = risk_percentage if risk_percentage is not None else settings.risk_percentage
-        self.capital = capital if capital is not None else settings.default_capital
+        self.risk_percentage = settings.risk_percentage if risk_percentage is _UNSET else risk_percentage
+        self.capital = settings.default_capital if capital is _UNSET else capital
         state_path = Path(settings.active_trades_path)
         if account_id != "default":
             state_path = state_path.with_name(f"{state_path.stem}_{account_id}{state_path.suffix}")
@@ -89,6 +91,25 @@ class OrderManager:
                 )
                 return self._handle_modification(signal)
             else:
+                # If this signal has NO entry price, NO trigger price, and is not a MARKET order,
+                # it is a target/SL continuation, not a fresh order.
+                if not signal.entry_price and not signal.trigger_price and signal.order_condition != OrderCondition.MARKET:
+                    if contract_key in self.managed_trades:
+                        logger.info(f"Found active managed trade for exact contract {contract_key}. Handling update/modification.")
+                        return self._handle_modification(signal)
+                    matched_order = None
+                    for oid in reversed(list(self.orders_by_id.keys())):
+                        ord_rec = self.orders_by_id[oid]
+                        if ord_rec.contract_key == contract_key:
+                            matched_order = ord_rec
+                            break
+                    if matched_order:
+                        logger.info(f"Found recent order {matched_order.order_id} for {contract_key}. Handling update/modification.")
+                        return self._handle_modification(signal)
+                    else:
+                        logger.warning(f"Received target/SL signal for {contract_key} with no entry price and no active order. Ignoring.")
+                        return {"status": "ignored", "reason": "No entry price or active order for target/SL"}
+
                 # User Rule: When a new call for the same index arrives (e.g. previous NIFTY 22500, new NIFTY 22350),
                 # cancel the existing pending order for that index, and place the new one.
                 # Orders for DIFFERENT indices (e.g. BANKEX vs NIFTY) are preserved!
@@ -159,33 +180,212 @@ class OrderManager:
 
     def _handle_modification(self, signal: ParsedSignal) -> Dict[str, Any]:
         """
-        Modifies price/trigger of an existing pending order or replaces it.
+        Modifies price/trigger of an existing pending order, or updates/attaches stop loss and targets
+        for open or pending trades.
         """
         contract_key = signal.contract_key()
-        target_order = self.pending_orders_by_contract.get(contract_key)
 
+        # Look for target order in pending_orders_by_contract or orders_by_id
+        target_order = self.pending_orders_by_contract.get(contract_key)
+        if not target_order:
+            for oid in reversed(list(self.orders_by_id.keys())):
+                ord_rec = self.orders_by_id[oid]
+                if ord_rec.contract_key == contract_key:
+                    target_order = ord_rec
+                    break
         if not target_order and self.last_order_id:
             target_order = self.orders_by_id.get(self.last_order_id)
 
+        # If no target order found, but trade is already in managed_trades, update managed_trades
+        if not target_order and contract_key in self.managed_trades:
+            trade = self.managed_trades[contract_key]
+            logger.info(f"[bold cyan]Updating stop loss / targets for existing managed trade {contract_key}[/bold cyan]")
+            if signal.stop_loss and signal.stop_loss > 0:
+                trade["stop_loss"] = float(signal.stop_loss)
+                trade["stop_price"] = float(signal.stop_loss)
+                if trade.get("stop_order_id"):
+                    self._modify_protective_stop(trade, int(trade.get("open_quantity", 0)), float(signal.stop_loss))
+                elif int(trade.get("open_quantity", 0)) > 0:
+                    stop_id = self._place_protective_stop(trade, int(trade["open_quantity"]))
+                    if stop_id:
+                        trade["stop_order_id"] = stop_id
+            if signal.targets:
+                trade["targets"] = [float(x) for x in signal.targets]
+            self._save_managed_trades()
+            return {"status": "managed_trade_updated", "contract_key": contract_key}
+
         if not target_order:
+            if not signal.entry_price and not signal.trigger_price and signal.order_condition != OrderCondition.MARKET:
+                logger.warning(f"No existing order found to modify for {contract_key} and signal has no entry price. Ignoring.")
+                return {"status": "ignored", "reason": "No existing order and no entry price"}
             logger.info(f"No existing order found to modify for {contract_key}. Placing as new order.")
             return self._handle_new_order(signal)
 
-        # Check if already executed or closed
+        # Check current status on Kotak Neo
         current_status = self.kotak.get_order_status(target_order.order_id)
+
+        # Sub-case A: Order is already COMPLETE (filled on broker)
         if current_status == OrderStatus.COMPLETE:
+            self._remove_from_pending(target_order)
+            if signal.stop_loss and signal.stop_loss > 0:
+                logger.info(
+                    f"[bold green]Order {target_order.order_id} for {target_order.trading_symbol} is already COMPLETE. "
+                    f"Attaching newly received stop loss ({signal.stop_loss}) and targets ({signal.targets}).[/bold green]"
+                )
+                try:
+                    entry_details = self.kotak.get_order_details(target_order.order_id)
+                    filled_qty = int(entry_details.get("filled_quantity") or target_order.quantity)
+                    avg_price = float(entry_details.get("average_price") or target_order.price or target_order.trigger_price or 0.0)
+                except Exception as exc:
+                    logger.warning(f"Could not fetch full order details for {target_order.order_id} ({exc}); using active order defaults")
+                    filled_qty = target_order.quantity
+                    avg_price = float(target_order.price or target_order.trigger_price or 0.0)
+
+                sym_info = None
+                try:
+                    sym_info = self.kotak.resolve_symbol(
+                        index=signal.index or target_order.contract_key.split("_")[0],
+                        strike=signal.strike_price or float(target_order.contract_key.split("_")[1]),
+                        option_type=signal.option_type or target_order.contract_key.split("_")[2],
+                        expiry=signal.target_expiry
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not resolve scrip during SL attachment: {e}")
+
+                lot_size = sym_info["lot_size"] if sym_info else 65
+                instrument_token = str(sym_info.get("instrument_token", "")) if sym_info else ""
+
+                lots_to_trade = max(1, filled_qty // lot_size)
+                target_count = min(len(signal.targets), lots_to_trade)
+                if target_count:
+                    lots_each, extra = divmod(lots_to_trade, target_count)
+                    target_quantities = [(lots_each + (1 if i < extra else 0)) * lot_size for i in range(target_count)]
+                else:
+                    target_quantities = []
+
+                trade = {
+                    "contract_key": contract_key,
+                    "entry_order_id": target_order.order_id,
+                    "trading_symbol": target_order.trading_symbol,
+                    "exchange_segment": target_order.exchange_segment,
+                    "instrument_token": instrument_token,
+                    "product": target_order.product,
+                    "entry_quantity": target_order.quantity,
+                    "entry_filled": filled_qty,
+                    "entry_average": avg_price,
+                    "entry_reference": float(signal.entry_price or target_order.trigger_price or avg_price),
+                    "stop_loss": float(signal.stop_loss),
+                    "targets": [float(x) for x in signal.targets[:target_count]],
+                    "target_quantities": target_quantities,
+                    "target_index": 0,
+                    "open_quantity": filled_qty,
+                    "stop_order_id": None,
+                    "stop_filled": 0,
+                    "stop_quantity": 0,
+                    "stop_price": float(signal.stop_loss),
+                    "pending_exit_id": None,
+                    "pending_exit_quantity": 0,
+                    "pending_exit_filled": 0,
+                    "pending_exit_target": None,
+                }
+                stop_id = self._place_protective_stop(trade, filled_qty)
+                if stop_id:
+                    trade["stop_order_id"] = stop_id
+                    logger.info(
+                        f"[bold green]Successfully placed protective stop for filled order {target_order.order_id}: "
+                        f"Stop ID={stop_id} | SL={signal.stop_loss}[/bold green]"
+                    )
+                self.managed_trades[contract_key] = trade
+                self._save_managed_trades()
+                notifier.notify_order_placed(
+                    order_id=target_order.order_id,
+                    symbol=target_order.trading_symbol,
+                    action="BUY",
+                    quantity=filled_qty,
+                    price=avg_price,
+                    trigger_price=target_order.trigger_price,
+                    stop_loss=signal.stop_loss,
+                    targets=signal.targets,
+                )
+                return {"status": "stop_loss_attached", "order_id": target_order.order_id, "stop_order_id": stop_id}
+
             logger.warning(
                 f"[yellow]Existing order {target_order.order_id} is already filled. Cannot modify pending order.[/yellow]"
             )
-            self._remove_from_pending(target_order)
             return {"status": "already_executed", "order_id": target_order.order_id}
 
+        # Sub-case B: Order was REJECTED or CANCELLED
         if current_status in (OrderStatus.REJECTED, OrderStatus.CANCELLED):
+            self._remove_from_pending(target_order)
+            if not signal.entry_price and not signal.trigger_price and signal.order_condition != OrderCondition.MARKET:
+                logger.warning(
+                    f"Existing order {target_order.order_id} was {current_status.value} and signal has no entry price. Ignoring."
+                )
+                return {"status": "order_not_active", "order_id": target_order.order_id}
             logger.warning(
                 f"[yellow]Existing order {target_order.order_id} is in status {current_status.value}. Placing new order instead of modifying.[/yellow]"
             )
-            self._remove_from_pending(target_order)
             return self._handle_new_order(signal)
+
+        # Sub-case C: Order is still pending (OPEN, TRIGGER_PENDING, PENDING)
+        # Register or update stop loss and targets in managed_trades for when it fills
+        if signal.stop_loss and signal.stop_loss > 0 and target_order.transaction_type in ("BUY", "B"):
+            sym_info = None
+            try:
+                if signal.index and signal.strike_price:
+                    sym_info = self.kotak.resolve_symbol(
+                        index=signal.index,
+                        strike=signal.strike_price,
+                        option_type=signal.option_type or "CE",
+                        expiry=signal.target_expiry,
+                    )
+            except Exception as e:
+                logger.warning(f"Could not resolve scrip details while registering stop loss: {e}")
+            lot_size = sym_info["lot_size"] if sym_info else 65
+            instrument_token = str(sym_info.get("instrument_token", "")) if sym_info else ""
+            target_count = min(len(signal.targets), max(1, target_order.quantity // lot_size))
+            if target_count:
+                lots_each, extra = divmod(max(1, target_order.quantity // lot_size), target_count)
+                target_quantities = [(lots_each + (1 if i < extra else 0)) * lot_size for i in range(target_count)]
+            else:
+                target_quantities = []
+            self.managed_trades[contract_key] = {
+                "contract_key": contract_key,
+                "entry_order_id": target_order.order_id,
+                "trading_symbol": target_order.trading_symbol,
+                "exchange_segment": target_order.exchange_segment,
+                "instrument_token": instrument_token,
+                "product": target_order.product,
+                "entry_quantity": target_order.quantity,
+                "entry_filled": 0,
+                "entry_average": 0.0,
+                "entry_reference": float(signal.entry_price or signal.trigger_price or target_order.trigger_price or 0.0),
+                "stop_loss": float(signal.stop_loss),
+                "targets": [float(x) for x in signal.targets[:target_count]],
+                "target_quantities": target_quantities,
+                "target_index": 0,
+                "open_quantity": 0,
+                "stop_order_id": None,
+                "stop_filled": 0,
+                "stop_quantity": 0,
+                "stop_price": float(signal.stop_loss),
+                "pending_exit_id": None,
+                "pending_exit_quantity": 0,
+                "pending_exit_filled": 0,
+                "pending_exit_target": None,
+            }
+            self._save_managed_trades()
+            logger.info(
+                f"[bold green]Registered stop loss ({signal.stop_loss}) and targets ({signal.targets}) "
+                f"for pending order {target_order.order_id}[/bold green]"
+            )
+
+        # If signal does not have a revised entry/trigger price, we only needed to register SL/targets
+        has_price_revision = bool(
+            signal.entry_price or signal.trigger_price or signal.order_condition == OrderCondition.MARKET
+        )
+        if not has_price_revision:
+            return {"status": "stop_loss_registered", "order_id": target_order.order_id}
 
         # Calculate new price and trigger
         try:
@@ -245,6 +445,13 @@ class OrderManager:
         if not signal.index or not signal.strike_price:
             logger.error("Cannot place order: index or strike_price missing from signal.")
             return {"status": "failed", "error": "Missing index or strike"}
+
+        # Prevent placing fresh orders if signal has no entry or trigger price and is not MARKET
+        if not signal.entry_price and not signal.trigger_price and signal.order_condition != OrderCondition.MARKET:
+            logger.warning(
+                f"Cannot place order for {signal.contract_key()}: signal contains no entry or trigger price."
+            )
+            return {"status": "failed", "error": "Missing entry/trigger price"}
 
         option_type = signal.option_type or "CE"
         index = signal.index.upper()
@@ -551,11 +758,14 @@ class OrderManager:
                         continue
                     dirty = True
                 else:
-                    cancel_resp = self.kotak.cancel_order(trade["stop_order_id"])
-                    if not cancel_resp.get("success"):
-                        logger.error(f"Cannot cancel stop before final target exit for {key}; skipping exit")
-                        continue
-                    trade["stop_order_id"] = None
+                    if trade.get("stop_order_id"):
+                        cancel_resp = self.kotak.cancel_order(trade["stop_order_id"])
+                        if not cancel_resp.get("success"):
+                            curr_st = self.kotak.get_order_status(trade["stop_order_id"])
+                            if curr_st not in (OrderStatus.CANCELLED, OrderStatus.COMPLETE):
+                                logger.error(f"Cannot cancel stop before final target exit for {key}; skipping exit")
+                                continue
+                        trade["stop_order_id"] = None
 
                 exit_response = self.kotak.place_order(OrderPlacement(
                     trading_symbol=trade["trading_symbol"],

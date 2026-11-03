@@ -55,5 +55,19 @@ class FakeKotakClient:
         order = self.orders.get(order_id)
         return order["status"] if order else None
 
+    def get_order_details(self, order_id):
+        order = self.orders.get(str(order_id))
+        if not order:
+            raise RuntimeError(f"Unknown order {order_id}")
+        placement = order.get("placement")
+        return {
+            "status": order["status"],
+            "status_text": order["status"].value,
+            "filled_quantity": placement.quantity if order["status"] == OrderStatus.COMPLETE else 0,
+            "quantity": placement.quantity if placement else 0,
+            "average_price": (placement.price or placement.trigger_price) if placement else 0.0,
+            "raw": order,
+        }
+
     def get_available_funds(self):
         return 1_000_000.0

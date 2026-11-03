@@ -30,6 +30,23 @@ class Settings(BaseModel):
     kafka_sasl_mechanism: Optional[str] = Field(default_factory=lambda: os.getenv("KAFKA_SASL_MECHANISM"))
     kafka_sasl_username: Optional[str] = Field(default_factory=lambda: os.getenv("KAFKA_SASL_USERNAME"))
     kafka_sasl_password: Optional[str] = Field(default_factory=lambda: os.getenv("KAFKA_SASL_PASSWORD"))
+    @staticmethod
+    def get_lot_size(symbol_or_index: str) -> int:
+        sym = (symbol_or_index or "").upper().strip()
+        if "FINNIFTY" in sym:
+            return 60
+        if "MIDCPNIFTY" in sym:
+            return 120
+        if "BANKNIFTY" in sym:
+            return 30
+        if "NIFTY" in sym:
+            return 65
+        if "BANKEX" in sym:
+            return 30
+        if "SENSEX" in sym:
+            return 20
+        return 65
+
     def is_kotak_configured(self) -> bool:
         required = (
             self.kotak_consumer_key, self.kotak_mobile_number, self.kotak_ucc,

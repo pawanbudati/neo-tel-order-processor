@@ -7,7 +7,9 @@ from fake_kotak_client import FakeKotakClient
 @pytest.fixture
 def order_manager():
     client = FakeKotakClient()
-    return OrderManager(kotak_client=client)
+    mgr = OrderManager(kotak_client=client, default_lots=1, risk_percentage=None, account_id="test_om_fixture")
+    mgr.managed_trades = {}
+    return mgr
 
 def test_new_order_placement(order_manager):
     signal = ParsedSignal(

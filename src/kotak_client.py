@@ -231,7 +231,7 @@ class KotakClient:
         return ltp
 
     def place_order(self, order: OrderPlacement) -> Dict[str, Any]:
-        """Places a new order (SL, Limit, or Market)."""
+        """Places a new order (SL, Limit, or Market). Re-authenticates if session has expired."""
         price_str = f"{order.price:.2f}"
         trigger_str = f"{order.trigger_price:.2f}" if order.trigger_price else "0"
 
@@ -239,69 +239,88 @@ class KotakClient:
         raw_tt = str(order.transaction_type or "B").strip().upper()
         mapped_tt = "B" if raw_tt in ("B", "BUY") else ("S" if raw_tt in ("S", "SELL") else "B")
 
-        try:
-            logger.info(
-                f"[bold green][LIVE] Sending Order to Kotak Neo:[/bold green] "
-                f"{mapped_tt} {order.quantity}x {order.trading_symbol} | "
-                f"Segment={order.exchange_segment} | Product={order.product} | "
-                f"Type={order.order_type} | Price={price_str} | Trigger={trigger_str}"
-            )
+        for attempt in range(2):
+            try:
+                logger.info(
+                    f"[bold green][LIVE] Sending Order to Kotak Neo (attempt {attempt+1}):[/bold green] "
+                    f"{mapped_tt} {order.quantity}x {order.trading_symbol} | "
+                    f"Segment={order.exchange_segment} | Product={order.product} | "
+                    f"Type={order.order_type} | Price={price_str} | Trigger={trigger_str}"
+                )
 
-            # Kotak Neo maps 'tag' to 'ig' (Client Order ID / GuiOrdId) which the OMS requires
-            # to be strictly unique per trading day. Ensure any non-empty tag is unique, alphanumeric,
-            # and within 20 chars to prevent 'Client OrderID already exists' errors.
-            tag_to_send = None
-            if order.tag:
-                clean_tag = "".join(c for c in order.tag if c.isalnum())
-                # If tag already contains unique random/timestamp suffix (e.g. TG1A2B3C4D), use it up to 20 chars
-                if len(clean_tag) >= 10 and not clean_tag.isalpha():
-                    tag_to_send = clean_tag[:20]
-                else:
-                    unique_suffix = uuid.uuid4().hex[:6].upper()
-                    clean_prefix = clean_tag[:14] if clean_tag else "TG"
-                    tag_to_send = f"{clean_prefix}{unique_suffix}"[:20]
+                # Kotak Neo maps 'tag' to 'ig' (Client Order ID / GuiOrdId) which the OMS requires
+                # to be strictly unique per trading day. Ensure any non-empty tag is unique, alphanumeric,
+                # and within 20 chars to prevent 'Client OrderID already exists' errors.
+                tag_to_send = None
+                if order.tag:
+                    clean_tag = "".join(c for c in order.tag if c.isalnum())
+                    if len(clean_tag) >= 10 and not clean_tag.isalpha():
+                        tag_to_send = clean_tag[:20]
+                    else:
+                        unique_suffix = uuid.uuid4().hex[:6].upper()
+                        clean_prefix = clean_tag[:14] if clean_tag else "TG"
+                        tag_to_send = f"{clean_prefix}{unique_suffix}"[:20]
 
-            resp = self.client.place_order(
-                exchange_segment=order.exchange_segment,
-                product=order.product,
-                price=price_str,
-                order_type=order.order_type,
-                quantity=str(order.quantity),
-                validity=order.validity,
-                trading_symbol=order.trading_symbol,
-                transaction_type=mapped_tt,
-                trigger_price=trigger_str,
-                tag=tag_to_send
-            )
-            logger.info(f"Kotak Neo place_order response: {resp}")
+                resp = self.client.place_order(
+                    exchange_segment=order.exchange_segment,
+                    product=order.product,
+                    price=price_str,
+                    order_type=order.order_type,
+                    quantity=str(order.quantity),
+                    validity=order.validity,
+                    trading_symbol=order.trading_symbol,
+                    transaction_type=mapped_tt,
+                    trigger_price=trigger_str,
+                    tag=tag_to_send
+                )
+                logger.info(f"Kotak Neo place_order response: {resp}")
 
-            if not isinstance(resp, dict):
-                logger.error(f"[bold red]Unexpected Kotak Neo response:[/bold red] {resp}")
-                return {"success": False, "error": f"Unexpected response: {resp}"}
+                if self._is_session_expired(resp):
+                    if attempt == 0:
+                        logger.warning(
+                            f"Kotak session appears expired or invalid during place_order ({resp}). "
+                            f"Re-authenticating and retrying order placement..."
+                        )
+                        self._init_live_client()
+                        continue
+                    else:
+                        logger.error(f"Kotak session expired and re-authentication failed: {resp}")
+                        return {"success": False, "error": f"Session expired: {resp}", "response": resp}
 
-            if "Error" in resp or "error" in resp or "Error Message" in resp:
-                err_val = resp.get("Error") or resp.get("error") or resp.get("Error Message")
-                logger.error(f"[bold red]Kotak Neo order placement rejected:[/bold red] {err_val}")
-                return {"success": False, "error": str(err_val), "response": resp}
+                if not isinstance(resp, dict):
+                    logger.error(f"[bold red]Unexpected Kotak Neo response:[/bold red] {resp}")
+                    return {"success": False, "error": f"Unexpected response: {resp}"}
 
-            stat = resp.get("stat")
-            if stat and stat != "Ok":
-                err_msg = resp.get("errMsg") or stat
-                if resp.get("errMsg") and resp.get("errMsg") != stat:
-                    err_msg = f"{resp.get('errMsg')}: {stat}"
-                logger.error(f"[bold red]Kotak Neo order placement failed:[/bold red] {err_msg}")
-                return {"success": False, "error": err_msg, "response": resp}
+                if "Error" in resp or "error" in resp or "Error Message" in resp:
+                    err_val = resp.get("Error") or resp.get("error") or resp.get("Error Message")
+                    logger.error(f"[bold red]Kotak Neo order placement rejected:[/bold red] {err_val}")
+                    return {"success": False, "error": str(err_val), "response": resp}
 
-            order_id = resp.get("nOrdNo") or resp.get("order_id") or resp.get("result")
-            if not order_id or str(order_id).strip().lower() in ("none", ""):
-                err_msg = resp.get("stat") or resp.get("errMsg") or "No valid order ID returned by Kotak Neo"
-                logger.error(f"[bold red]Kotak Neo placed order returned no order ID:[/bold red] {resp}")
-                return {"success": False, "error": err_msg, "response": resp}
+                stat = resp.get("stat")
+                if stat and stat != "Ok":
+                    err_msg = resp.get("errMsg") or stat
+                    if resp.get("errMsg") and resp.get("errMsg") != stat:
+                        err_msg = f"{resp.get('errMsg')}: {stat}"
+                    logger.error(f"[bold red]Kotak Neo order placement failed:[/bold red] {err_msg}")
+                    return {"success": False, "error": err_msg, "response": resp}
 
-            return {"success": True, "order_id": str(order_id), "response": resp}
-        except Exception as e:
-            logger.error(f"[bold red]Failed to place order in Kotak Neo:[/bold red] {e}")
-            return {"success": False, "error": str(e)}
+                order_id = resp.get("nOrdNo") or resp.get("order_id") or resp.get("result")
+                if not order_id or str(order_id).strip().lower() in ("none", ""):
+                    err_msg = resp.get("stat") or resp.get("errMsg") or "No valid order ID returned by Kotak Neo"
+                    logger.error(f"[bold red]Kotak Neo placed order returned no order ID:[/bold red] {resp}")
+                    return {"success": False, "error": err_msg, "response": resp}
+
+                return {"success": True, "order_id": str(order_id), "response": resp}
+            except Exception as e:
+                if attempt == 0 and any(k in str(e).lower() for k in ("401", "unauthorized", "session", "token", "forbidden")):
+                    logger.warning(f"place_order failed with auth error ({e}). Re-authenticating...")
+                    try:
+                        self._init_live_client()
+                        continue
+                    except Exception as reauth_err:
+                        logger.error(f"Re-authentication failed: {reauth_err}")
+                logger.error(f"[bold red]Failed to place order in Kotak Neo:[/bold red] {e}")
+                return {"success": False, "error": str(e)}
 
     def modify_order(
         self,
@@ -312,155 +331,224 @@ class KotakClient:
         trigger_price: float = 0.0,
         validity: str = "DAY"
     ) -> Dict[str, Any]:
-        """Modifies a pending order."""
+        """Modifies a pending order. Re-authenticates if session has expired."""
         price_str = f"{price:.2f}"
         trigger_str = f"{trigger_price:.2f}" if trigger_price else "0"
 
-        try:
-            logger.info(
-                f"[bold yellow][LIVE] Modifying Order:[/bold yellow] ID={order_id} | "
-                f"Price={price_str} | Trigger={trigger_str}"
-            )
-            resp = self.client.modify_order(
-                order_id=str(order_id),
-                price=price_str,
-                order_type=order_type,
-                quantity=str(quantity),
-                validity=validity,
-                trigger_price=trigger_str
-            )
-            logger.info(f"Kotak Neo modify_order response: {resp}")
+        for attempt in range(2):
+            try:
+                logger.info(
+                    f"[bold yellow][LIVE] Modifying Order (attempt {attempt+1}):[/bold yellow] ID={order_id} | "
+                    f"Price={price_str} | Trigger={trigger_str}"
+                )
+                resp = self.client.modify_order(
+                    order_id=str(order_id),
+                    price=price_str,
+                    order_type=order_type,
+                    quantity=str(quantity),
+                    validity=validity,
+                    trigger_price=trigger_str
+                )
+                logger.info(f"Kotak Neo modify_order response: {resp}")
 
-            if not isinstance(resp, dict):
-                return {"success": False, "error": f"Unexpected response: {resp}"}
+                if self._is_session_expired(resp):
+                    if attempt == 0:
+                        logger.warning(f"Kotak session expired during modify_order ({resp}). Re-authenticating...")
+                        self._init_live_client()
+                        continue
+                    else:
+                        return {"success": False, "error": f"Session expired: {resp}", "response": resp}
 
-            if "Error" in resp or "error" in resp or "Error Message" in resp:
-                err_val = resp.get("Error") or resp.get("error") or resp.get("Error Message")
-                return {"success": False, "error": str(err_val), "response": resp}
+                if not isinstance(resp, dict):
+                    return {"success": False, "error": f"Unexpected response: {resp}"}
 
-            stat = resp.get("stat")
-            if stat and stat != "Ok":
-                err_msg = resp.get("errMsg") or stat
-                if resp.get("errMsg") and resp.get("errMsg") != stat:
-                    err_msg = f"{resp.get('errMsg')}: {stat}"
-                return {"success": False, "error": err_msg, "response": resp}
+                if "Error" in resp or "error" in resp or "Error Message" in resp:
+                    err_val = resp.get("Error") or resp.get("error") or resp.get("Error Message")
+                    return {"success": False, "error": str(err_val), "response": resp}
 
-            return {"success": True, "order_id": order_id, "response": resp}
-        except Exception as e:
-            logger.error(f"[bold red]Failed to modify order {order_id}:[/bold red] {e}")
-            return {"success": False, "error": str(e)}
+                stat = resp.get("stat")
+                if stat and stat != "Ok":
+                    err_msg = resp.get("errMsg") or stat
+                    if resp.get("errMsg") and resp.get("errMsg") != stat:
+                        err_msg = f"{resp.get('errMsg')}: {stat}"
+                    return {"success": False, "error": err_msg, "response": resp}
+
+                return {"success": True, "order_id": order_id, "response": resp}
+            except Exception as e:
+                if attempt == 0 and any(k in str(e).lower() for k in ("401", "unauthorized", "session", "token")):
+                    logger.warning(f"modify_order failed with auth error ({e}). Re-authenticating...")
+                    try:
+                        self._init_live_client()
+                        continue
+                    except Exception as reauth_err:
+                        logger.error(f"Re-authentication failed: {reauth_err}")
+                logger.error(f"[bold red]Failed to modify order {order_id}:[/bold red] {e}")
+                return {"success": False, "error": str(e)}
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
-        """Cancels a pending order."""
-        try:
-            logger.info(f"[bold red][LIVE] Cancelling Order:[/bold red] ID={order_id}")
-            resp = self.client.cancel_order(order_id=str(order_id))
-            logger.info(f"Kotak Neo cancel_order response: {resp}")
+        """Cancels a pending order. Re-authenticates if session has expired."""
+        for attempt in range(2):
+            try:
+                logger.info(f"[bold red][LIVE] Cancelling Order (attempt {attempt+1}):[/bold red] ID={order_id}")
+                resp = self.client.cancel_order(order_id=str(order_id))
+                logger.info(f"Kotak Neo cancel_order response: {resp}")
 
-            if not isinstance(resp, dict):
-                return {"success": False, "error": f"Unexpected response: {resp}"}
+                if self._is_session_expired(resp):
+                    if attempt == 0:
+                        logger.warning(f"Kotak session expired during cancel_order ({resp}). Re-authenticating...")
+                        self._init_live_client()
+                        continue
+                    else:
+                        return {"success": False, "error": f"Session expired: {resp}", "response": resp}
 
-            if "Error" in resp or "error" in resp or "Error Message" in resp:
-                err_val = resp.get("Error") or resp.get("error") or resp.get("Error Message")
-                return {"success": False, "error": str(err_val), "response": resp}
+                if not isinstance(resp, dict):
+                    return {"success": False, "error": f"Unexpected response: {resp}"}
 
-            stat = resp.get("stat")
-            if stat and stat != "Ok":
-                err_msg = resp.get("errMsg") or stat
-                if resp.get("errMsg") and resp.get("errMsg") != stat:
-                    err_msg = f"{resp.get('errMsg')}: {stat}"
-                return {"success": False, "error": err_msg, "response": resp}
+                if "Error" in resp or "error" in resp or "Error Message" in resp:
+                    err_val = resp.get("Error") or resp.get("error") or resp.get("Error Message")
+                    return {"success": False, "error": str(err_val), "response": resp}
 
-            return {"success": True, "order_id": order_id, "response": resp}
-        except Exception as e:
-            logger.error(f"[bold red]Failed to cancel order {order_id}:[/bold red] {e}")
-            return {"success": False, "error": str(e)}
+                stat = resp.get("stat")
+                if stat and stat != "Ok":
+                    err_msg = resp.get("errMsg") or stat
+                    if resp.get("errMsg") and resp.get("errMsg") != stat:
+                        err_msg = f"{resp.get('errMsg')}: {stat}"
+                    return {"success": False, "error": err_msg, "response": resp}
+
+                return {"success": True, "order_id": order_id, "response": resp}
+            except Exception as e:
+                if attempt == 0 and any(k in str(e).lower() for k in ("401", "unauthorized", "session", "token")):
+                    logger.warning(f"cancel_order failed with auth error ({e}). Re-authenticating...")
+                    try:
+                        self._init_live_client()
+                        continue
+                    except Exception as reauth_err:
+                        logger.error(f"Re-authentication failed: {reauth_err}")
+                logger.error(f"[bold red]Failed to cancel order {order_id}:[/bold red] {e}")
+                return {"success": False, "error": str(e)}
 
     def get_order_status(self, order_id: str) -> Optional[OrderStatus]:
         """Fetches status of a specific order."""
-        try:
-            report = self.client.order_report(order_id=str(order_id))
-            # Format varies between single order list or dictionary
-            data = report.get("data") if isinstance(report, dict) else report
-            if isinstance(data, list) and len(data) > 0:
-                ord_data = data[0]
-            elif isinstance(data, dict):
-                ord_data = data
-            else:
-                ord_data = report
+        for attempt in range(2):
+            try:
+                report = self.client.order_report(order_id=str(order_id))
+                if self._is_session_expired(report):
+                    if attempt == 0:
+                        logger.warning(f"Kotak session expired during order_report ({report}). Re-authenticating...")
+                        self._init_live_client()
+                        continue
+                # Format varies between single order list or dictionary
+                data = report.get("data") if isinstance(report, dict) else report
+                if isinstance(data, list) and len(data) > 0:
+                    ord_data = data[0]
+                elif isinstance(data, dict):
+                    ord_data = data
+                else:
+                    ord_data = report
 
-            raw_st = str(ord_data.get("ordSt", ord_data.get("status", ""))).lower()
-            if "trig" in raw_st:
-                return OrderStatus.TRIGGER_PENDING
-            elif "open" in raw_st:
-                return OrderStatus.OPEN
-            elif "comp" in raw_st or "trad" in raw_st:
-                return OrderStatus.COMPLETE
-            elif "canc" in raw_st:
-                return OrderStatus.CANCELLED
-            elif "rej" in raw_st:
-                return OrderStatus.REJECTED
-            return OrderStatus.PENDING
-        except Exception as e:
-            logger.warning(f"Error fetching status for order {order_id}: {e}")
-            return None
+                raw_st = str(ord_data.get("ordSt", ord_data.get("status", ""))).lower()
+                if "trig" in raw_st:
+                    return OrderStatus.TRIGGER_PENDING
+                elif "open" in raw_st:
+                    return OrderStatus.OPEN
+                elif "comp" in raw_st or "trad" in raw_st:
+                    return OrderStatus.COMPLETE
+                elif "canc" in raw_st:
+                    return OrderStatus.CANCELLED
+                elif "rej" in raw_st:
+                    return OrderStatus.REJECTED
+                return OrderStatus.PENDING
+            except Exception as e:
+                if attempt == 0 and any(k in str(e).lower() for k in ("401", "unauthorized", "session", "token")):
+                    logger.warning(f"get_order_status failed with auth error ({e}). Re-authenticating...")
+                    try:
+                        self._init_live_client()
+                        continue
+                    except Exception as reauth_err:
+                        logger.error(f"Re-authentication failed: {reauth_err}")
+                logger.warning(f"Error fetching status for order {order_id}: {e}")
+                return None
+        return None
 
     def get_order_details(self, order_id: str) -> Dict[str, Any]:
         """Return the latest Kotak order fields used to reconcile live fills."""
         if not self.client or not self.is_authenticated:
             raise RuntimeError("Kotak client is not authenticated")
-        report = self.client.order_report(order_id=str(order_id))
-        rows = report.get("data") if isinstance(report, dict) else report
-        if isinstance(rows, list):
-            row = next((item for item in rows if str(item.get("nOrdNo", item.get("order_id", ""))) == str(order_id)), None)
-        elif isinstance(rows, dict):
-            row = rows
-        else:
-            row = None
-        if not isinstance(row, dict):
-            raise RuntimeError(f"Kotak returned no order details for {order_id}: {report}")
-        status_text = str(row.get("ordSt", row.get("status", ""))).lower()
-        if "trig" in status_text:
-            status = OrderStatus.TRIGGER_PENDING
-        elif "open" in status_text or "pending" in status_text:
-            status = OrderStatus.OPEN
-        elif "comp" in status_text or "trad" in status_text or "execut" in status_text:
-            status = OrderStatus.COMPLETE
-        elif "canc" in status_text:
-            status = OrderStatus.CANCELLED
-        elif "rej" in status_text:
-            status = OrderStatus.REJECTED
-        else:
-            status = OrderStatus.PENDING
-        filled = row.get("fldQty", row.get("filled_quantity", 0))
-        quantity = row.get("qty", row.get("quantity", 0))
-        average_price = row.get("avgPrc", row.get("average_price", 0))
-        try:
-            filled_quantity = int(float(filled or 0))
-        except (TypeError, ValueError):
-            filled_quantity = 0
-        if status == OrderStatus.COMPLETE and filled_quantity <= 0:
+        for attempt in range(2):
             try:
-                filled_quantity = int(float(quantity or 0))
-            except (TypeError, ValueError):
-                filled_quantity = 0
-        try:
-            avg_price = float(average_price or 0)
-        except (TypeError, ValueError):
-            avg_price = 0.0
-        return {
-            "status": status,
-            "status_text": status_text,
-            "filled_quantity": filled_quantity,
-            "quantity": int(float(quantity or 0)),
-            "average_price": avg_price,
-            "raw": row,
-        }
+                report = self.client.order_report(order_id=str(order_id))
+                if self._is_session_expired(report):
+                    if attempt == 0:
+                        logger.warning(f"Kotak session expired during get_order_details ({report}). Re-authenticating...")
+                        self._init_live_client()
+                        continue
+                    else:
+                        raise RuntimeError(f"Kotak session expired during order report: {report}")
+                rows = report.get("data") if isinstance(report, dict) else report
+                if isinstance(rows, list):
+                    row = next((item for item in rows if str(item.get("nOrdNo", item.get("order_id", ""))) == str(order_id)), None)
+                elif isinstance(rows, dict):
+                    row = rows
+                else:
+                    row = None
+                if not isinstance(row, dict):
+                    raise RuntimeError(f"Kotak returned no order details for {order_id}: {report}")
+                status_text = str(row.get("ordSt", row.get("status", ""))).lower()
+                if "trig" in status_text:
+                    status = OrderStatus.TRIGGER_PENDING
+                elif "open" in status_text or "pending" in status_text:
+                    status = OrderStatus.OPEN
+                elif "comp" in status_text or "trad" in status_text or "execut" in status_text:
+                    status = OrderStatus.COMPLETE
+                elif "canc" in status_text:
+                    status = OrderStatus.CANCELLED
+                elif "rej" in status_text:
+                    status = OrderStatus.REJECTED
+                else:
+                    status = OrderStatus.PENDING
+                filled = row.get("fldQty", row.get("filled_quantity", 0))
+                quantity = row.get("qty", row.get("quantity", 0))
+                average_price = row.get("avgPrc", row.get("average_price", 0))
+                try:
+                    filled_quantity = int(float(filled or 0))
+                except (TypeError, ValueError):
+                    filled_quantity = 0
+                if status == OrderStatus.COMPLETE and filled_quantity <= 0:
+                    try:
+                        filled_quantity = int(float(quantity or 0))
+                    except (TypeError, ValueError):
+                        filled_quantity = 0
+                try:
+                    avg_price = float(average_price or 0)
+                except (TypeError, ValueError):
+                    avg_price = 0.0
+                return {
+                    "status": status,
+                    "status_text": status_text,
+                    "filled_quantity": filled_quantity,
+                    "quantity": int(float(quantity or 0)),
+                    "average_price": avg_price,
+                    "raw": row,
+                }
+            except Exception as e:
+                if attempt == 0 and any(k in str(e).lower() for k in ("401", "unauthorized", "session", "token")):
+                    logger.warning(f"order_report failed with auth error ({e}). Re-authenticating...")
+                    try:
+                        self._init_live_client()
+                        continue
+                    except Exception as reauth_err:
+                        logger.error(f"Re-authentication failed: {reauth_err}")
+                raise
+        raise RuntimeError(f"Unable to retrieve order details for {order_id} after retry")
 
     @staticmethod
     def _is_session_expired(response: Any) -> bool:
         """Detects if response indicates an expired or invalid session token."""
         if isinstance(response, dict):
+            # Check explicit error codes from Kotak Neo API
+            st_code = response.get("stCode")
+            if st_code in (100022, 100023, 100024, 401, 403):
+                return True
             err_msg = str(
                 response.get("Error Message")
                 or response.get("error")
