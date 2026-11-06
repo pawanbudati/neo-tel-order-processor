@@ -56,16 +56,16 @@ sudo systemctl enable "$SERVICE_NAME"
 sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl --no-pager --full status "$SERVICE_NAME"
 
-# Configure journalctl log cleanup cron job
+# Configure journalctl log cleanup and daily service restart cron job
 CRON_SCHEDULE="${LOG_CLEANUP_CRON:-0 8 * * *}"
 cron_file="/etc/cron.d/journal-log-cleanup"
-echo "Configuring journalctl cleanup cron job ($CRON_SCHEDULE) in $cron_file..."
+echo "Configuring cleanup & service restart cron job ($CRON_SCHEDULE) in $cron_file..."
 sudo tee "$cron_file" >/dev/null <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-$CRON_SCHEDULE root journalctl --rotate && journalctl --vacuum-time=1s >/dev/null 2>&1
+$CRON_SCHEDULE root journalctl --rotate && journalctl --vacuum-time=1s && systemctl restart $SERVICE_NAME >/dev/null 2>&1
 EOF
 sudo chmod 644 "$cron_file"
 sudo systemctl enable --now cron 2>/dev/null || sudo systemctl enable --now crond 2>/dev/null || true
-echo "Journalctl cleanup cron job successfully installed."
+echo "Journalctl cleanup & service restart cron job successfully installed."
