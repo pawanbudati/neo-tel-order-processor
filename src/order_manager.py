@@ -121,17 +121,128 @@ class OrderManager:
 
         return {"status": "unhandled", "signal_type": signal.signal_type.value}
 
+    def _exit_open_trade(self, trade: Dict[str, Any], reason: str = "Exit signal received") -> Dict[str, Any]:
+        """
+        Immediately exits an open position at MARKET.
+        Cancels working protective stop loss order and any pending exit orders first,
+        then fires a market SELL order to close the position.
+        """
+        contract_key = trade.get("contract_key", "UNKNOWN")
+        open_qty = int(trade.get("open_quantity", 0))
+        if open_qty <= 0:
+            return {"status": "no_open_quantity", "message": f"No open quantity to exit for {contract_key}"}
+
+        acc_tag = f"[{self.account_id}] " if self.account_id != "default" else ""
+        logger.info(
+            f"[bold red]{acc_tag}IMMEDIATE MARKET EXIT triggered for {contract_key}:[/bold red] "
+            f"Qty={open_qty} | Reason='{reason}'"
+        )
+
+        # 1. Cancel working protective stop order if present
+        stop_id = trade.get("stop_order_id")
+        if stop_id:
+            try:
+                logger.info(f"{acc_tag}Cancelling protective stop order {stop_id} prior to market exit...")
+                self.kotak.cancel_order(stop_id)
+            except Exception as e:
+                logger.warning(f"{acc_tag}Failed to cancel stop order {stop_id}: {e}")
+            trade["stop_order_id"] = None
+
+        # 2. Cancel pending target exit order if present
+        pending_exit_id = trade.get("pending_exit_id")
+        if pending_exit_id:
+            try:
+                logger.info(f"{acc_tag}Cancelling pending target exit order {pending_exit_id} prior to market exit...")
+                self.kotak.cancel_order(pending_exit_id)
+            except Exception as e:
+                logger.warning(f"{acc_tag}Failed to cancel pending exit order {pending_exit_id}: {e}")
+            trade["pending_exit_id"] = None
+
+        # 3. Place immediate MARKET exit order
+        exit_resp = self.kotak.place_order(OrderPlacement(
+            trading_symbol=trade["trading_symbol"],
+            exchange_segment=trade.get("exchange_segment", "nse_fo"),
+            transaction_type="SELL",
+            order_type="MKT",
+            quantity=open_qty,
+            price=0.0,
+            product=trade.get("product", "MIS"),
+            tag=f"TX{uuid.uuid4().hex[:8].upper()}",
+            contract_key=contract_key,
+        ))
+
+        if exit_resp.get("success"):
+            exit_order_id = str(exit_resp.get("order_id", ""))
+            trade["open_quantity"] = 0
+            trade["status"] = "CLOSED"
+            trade["closed_at"] = datetime.now(timezone.utc).isoformat()
+            trade["close_reason"] = reason
+            self._save_managed_trades()
+
+            if contract_key in self.pending_orders_by_contract:
+                del self.pending_orders_by_contract[contract_key]
+
+            logger.info(
+                f"[bold green]{acc_tag}Successfully placed immediate market exit order for {contract_key}: "
+                f"ID={exit_order_id} | Qty={open_qty}[/bold green]"
+            )
+            return {
+                "status": "exited_market",
+                "order_id": exit_order_id,
+                "contract_key": contract_key,
+                "quantity": open_qty,
+                "reason": reason
+            }
+        else:
+            err = exit_resp.get("error", "Unknown error")
+            logger.error(f"[bold red]{acc_tag}Failed to place immediate market exit order for {contract_key}: {err}[/bold red]")
+            return {"status": "failed_to_exit", "error": err, "contract_key": contract_key}
+
     def _handle_cancellation(self, signal: ParsedSignal) -> Dict[str, Any]:
         """
         Cancels pending order(s) corresponding to the signal or the latest pending order.
+        If an open trade already exists or the order was filled, executes an IMMEDIATE MARKET EXIT.
         """
-        target_order: Optional[ActiveOrder] = None
+        is_exit_signal = (
+            signal.signal_type == SignalType.CLOSE_POSITION
+            or (signal.action and signal.action.upper() == "EXIT")
+            or ("EXIT" in (signal.raw_message or "").upper())
+        )
         contract_key = signal.contract_key()
+        acc_tag = f"[{self.account_id}] " if self.account_id != "default" else ""
 
-        # 1. Check exact contract match
+        # Check for open position in managed_trades first
+        target_trade: Optional[Dict[str, Any]] = None
+        if contract_key in self.managed_trades and int(self.managed_trades[contract_key].get("open_quantity", 0)) > 0:
+            target_trade = self.managed_trades[contract_key]
+        elif signal.index and signal.strike_price:
+            idx = signal.index.upper()
+            strike_str = str(int(signal.strike_price))
+            for k, trade in list(self.managed_trades.items()):
+                if k.startswith(f"{idx}_{strike_str}") and int(trade.get("open_quantity", 0)) > 0:
+                    target_trade = trade
+                    break
+        elif signal.index:
+            idx = signal.index.upper().strip()
+            for k, trade in list(self.managed_trades.items()):
+                if k.startswith(f"{idx}_") and int(trade.get("open_quantity", 0)) > 0:
+                    target_trade = trade
+                    break
+        elif is_exit_signal:
+            # Fallback for generic "exit" / "exit cost to cost": pick most recent open trade
+            for k, trade in reversed(list(self.managed_trades.items())):
+                if int(trade.get("open_quantity", 0)) > 0:
+                    target_trade = trade
+                    break
+
+        # If it's an exit signal and we have an open position, exit immediately!
+        if is_exit_signal and target_trade and int(target_trade.get("open_quantity", 0)) > 0:
+            return self._exit_open_trade(target_trade, reason=signal.raw_message or "Exit instruction received")
+
+        # Otherwise check for pending orders
+        target_order: Optional[ActiveOrder] = None
         if contract_key != "UNKNOWN_0_CE" and contract_key in self.pending_orders_by_contract:
             target_order = self.pending_orders_by_contract[contract_key]
-        # 2. Check by index and strike match if option type was omitted
         elif signal.index and signal.strike_price:
             idx = signal.index.upper()
             strike_str = str(int(signal.strike_price))
@@ -139,36 +250,56 @@ class OrderManager:
                 if k.startswith(f"{idx}_{strike_str}"):
                     target_order = ord_rec
                     break
-        # 3. Check by index only (e.g. "exit nifty" or "cancel nifty")
         elif signal.index:
             idx = signal.index.upper().strip()
             for k, ord_rec in list(self.pending_orders_by_contract.items()):
                 if k.startswith(f"{idx}_") or (ord_rec.raw_signal and ord_rec.raw_signal.index and ord_rec.raw_signal.index.upper() == idx):
                     target_order = ord_rec
                     break
-        # 4. Fallback: Cancel the most recently placed pending order
         elif self.last_order_id and self.last_order_id in self.orders_by_id:
             target_order = self.orders_by_id[self.last_order_id]
 
         if not target_order:
+            # If no pending order but target_trade exists with 0 qty or nothing found
+            if target_trade and int(target_trade.get("open_quantity", 0)) > 0:
+                return self._exit_open_trade(target_trade, reason=signal.raw_message or "Exit instruction received")
             logger.warning(
-                f"[yellow]Ignore/Cancel signal received for '{signal.raw_message}', "
-                f"but no matching active pending order was found.[/yellow]"
+                f"[yellow]{acc_tag}Cancel/Exit signal received for '{signal.raw_message}', "
+                f"but no matching active pending order or open trade was found.[/yellow]"
             )
-            return {"status": "no_pending_order_found", "message": "No matching active pending order found"}
+            return {"status": "no_pending_order_found", "message": "No matching active pending order or open trade found"}
 
-        # Verify current status before cancellation
+        # Verify current status of target_order on broker
         current_status = self.kotak.get_order_status(target_order.order_id)
         if current_status == OrderStatus.COMPLETE:
-            logger.warning(
-                f"[yellow]Order {target_order.order_id} for {target_order.trading_symbol} is already COMPLETE. Cannot cancel.[/yellow]"
-            )
-            self._remove_from_pending(target_order)
-            return {"status": "already_executed", "order_id": target_order.order_id}
+            if is_exit_signal:
+                logger.info(
+                    f"{acc_tag}Order {target_order.order_id} is COMPLETE. "
+                    f"Executing immediate market exit for {target_order.trading_symbol}..."
+                )
+                open_trade_data = self.managed_trades.get(target_order.contract_key) or {
+                    "contract_key": target_order.contract_key,
+                    "trading_symbol": target_order.trading_symbol,
+                    "exchange_segment": target_order.exchange_segment,
+                    "product": target_order.product,
+                    "open_quantity": target_order.quantity,
+                    "stop_order_id": None,
+                    "pending_exit_id": None,
+                }
+                if int(open_trade_data.get("open_quantity", 0)) <= 0:
+                    open_trade_data["open_quantity"] = target_order.quantity
+                self._remove_from_pending(target_order)
+                return self._exit_open_trade(open_trade_data, reason=signal.raw_message or "Exit instruction received")
+            else:
+                logger.warning(
+                    f"[yellow]{acc_tag}Order {target_order.order_id} for {target_order.trading_symbol} is already COMPLETE. Cannot cancel.[/yellow]"
+                )
+                self._remove_from_pending(target_order)
+                return {"status": "already_executed", "order_id": target_order.order_id}
 
-        # Issue cancellation to Kotak Neo
+        # Pending order cancellation
         logger.info(
-            f"[bold red]Cancelling pending order:[/bold red] ID={target_order.order_id} | "
+            f"[bold red]{acc_tag}Cancelling pending order:[/bold red] ID={target_order.order_id} | "
             f"Contract={target_order.contract_key} | Symbol={target_order.trading_symbol}"
         )
         cancel_resp = self.kotak.cancel_order(target_order.order_id)
@@ -176,7 +307,7 @@ class OrderManager:
             target_order.status = OrderStatus.CANCELLED
             target_order.last_updated_at = datetime.now(timezone.utc)
             self._remove_from_pending(target_order)
-            logger.info(f"[bold green]Successfully cancelled order {target_order.order_id}[/bold green]")
+            logger.info(f"[bold green]{acc_tag}Successfully cancelled order {target_order.order_id}[/bold green]")
             return {"status": "cancelled", "order_id": target_order.order_id}
         else:
             return {"status": "failed_to_cancel", "error": cancel_resp.get("error")}
