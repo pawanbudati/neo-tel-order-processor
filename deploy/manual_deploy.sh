@@ -94,8 +94,9 @@ deploy_to_target() {
 
   # 3. Execute remote deploy.sh
   echo ">>> Running remote deploy.sh on $host..."
+  local cleanup_cron="${LOG_CLEANUP_CRON:-0 8 * * *}"
   ssh "${ssh_opts[@]}" "$user@$host" \
-    "DEPLOY_PATH='$remote_path' bash '$remote_path/deploy/deploy.sh'"
+    "DEPLOY_PATH='$remote_path' LOG_CLEANUP_CRON='$cleanup_cron' bash '$remote_path/deploy/deploy.sh'"
 
   echo ">>> Deployment to [$target_name] completed successfully!"
   echo ""

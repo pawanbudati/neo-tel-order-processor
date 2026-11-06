@@ -141,7 +141,8 @@ function Invoke-DeployTarget {
 
     # 3. Execute remote deploy.sh
     Write-Host ">>> Executing remote deploy.sh on $HostName..." -ForegroundColor Yellow
-    & ssh $sshArgs "${UserName}@${HostName}" "DEPLOY_PATH='$RemoteDir' bash '$RemoteDir/deploy/deploy.sh'"
+    $cleanupCron = if ($env:LOG_CLEANUP_CRON) { $env:LOG_CLEANUP_CRON } else { "0 8 * * *" }
+    & ssh $sshArgs "${UserName}@${HostName}" "DEPLOY_PATH='$RemoteDir' LOG_CLEANUP_CRON='$cleanupCron' bash '$RemoteDir/deploy/deploy.sh'"
     if ($LASTEXITCODE -ne 0) {
         throw "Remote deploy.sh on $HostName reported an error."
     }
