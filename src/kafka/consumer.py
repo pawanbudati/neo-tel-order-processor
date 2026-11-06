@@ -74,6 +74,9 @@ class KafkaSignalConsumer:
             "group_id": self.group_id,
             "auto_offset_reset": self.auto_offset_reset,
             "enable_auto_commit": False,  # Manual commit after order processing
+            "session_timeout_ms": 30000,   # 30s timeout to prevent broker dropping consumer during API calls
+            "heartbeat_interval_ms": 5000, # Heartbeat every 5s
+            "max_poll_interval_ms": 300000, # 5 min max poll interval
             "security_protocol": self.security_protocol,
             "value_deserializer": lambda v: json.loads(v.decode("utf-8")),
             "key_deserializer": lambda k: k.decode("utf-8") if k else None,
@@ -117,8 +120,8 @@ class KafkaSignalConsumer:
                         await self._process_kafka_message(msg)
                 if not self.on_signal_callback:
                     # Poll even when Kafka is quiet: staged exits and stop updates
-                    # depend on live order and quote changes.
-                    self.order_manager.manage_open_trades()
+                    # depend on live order and quote changes. Run in worker thread to prevent loop blocking.
+                    await asyncio.to_thread(self.order_manager.manage_open_trades)
         except asyncio.CancelledError:
             logger.info("[yellow]Consumer task cancelled.[/yellow]")
         except Exception as e:
@@ -132,7 +135,10 @@ class KafkaSignalConsumer:
             payload = msg.value
             if not isinstance(payload, dict):
                 logger.warning(f"[yellow]Ignored invalid Kafka message format: {type(payload)}[/yellow]")
-                await self.consumer.commit()
+                try:
+                    await self.consumer.commit()
+                except Exception:
+                    pass
                 return
 
             meta = payload.get("_meta", {})
@@ -156,18 +162,26 @@ class KafkaSignalConsumer:
             )
 
             # Execute via OrderManager or custom callback
+            # Note: order_manager.process_signal makes synchronous Kotak API calls.
+            # We run it in a worker thread via asyncio.to_thread so the event loop
+            # and Kafka background heartbeats continue running uninterrupted!
             if self.on_signal_callback:
                 if asyncio.iscoroutinefunction(self.on_signal_callback):
                     res = await self.on_signal_callback(parsed_signal)
                 else:
-                    res = self.on_signal_callback(parsed_signal)
+                    res = await asyncio.to_thread(self.on_signal_callback, parsed_signal)
             else:
-                res = self.order_manager.process_signal(parsed_signal)
+                res = await asyncio.to_thread(self.order_manager.process_signal, parsed_signal)
 
             logger.info(f"[bold green]Execution Result on '{self.account_id}':[/bold green] {res}")
 
             # Commit offset after successful order processing
-            await self.consumer.commit()
+            try:
+                await self.consumer.commit()
+            except Exception as commit_err:
+                logger.warning(
+                    f"[yellow]Failed to commit Kafka offset after signal processing for '{self.account_id}': {commit_err}[/yellow]"
+                )
 
         except Exception as e:
             logger.error(
@@ -177,5 +191,7 @@ class KafkaSignalConsumer:
             # Even on error, commit offset to avoid poison-pill message loops
             try:
                 await self.consumer.commit()
-            except Exception:
-                pass
+            except Exception as commit_err:
+                logger.warning(
+                    f"[yellow]Failed to commit Kafka offset on error for '{self.account_id}': {commit_err}[/yellow]"
+                )
