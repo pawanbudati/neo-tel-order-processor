@@ -10,7 +10,22 @@ if [[ ! -f "$APP_DIR/.env" ]]; then
   exit 1
 fi
 
-python3 -m venv "$APP_DIR/.venv"
+# Ensure python3-venv and ensurepip are available
+if ! python3 -c "import ensurepip" >/dev/null 2>&1 || ! python3 -m venv --help >/dev/null 2>&1; then
+  echo "python3-venv / ensurepip missing on host. Installing packages..."
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update && sudo apt-get install -y python3-venv python3-pip
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y python3 python3-pip
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y python3 python3-pip
+  fi
+fi
+
+if [[ ! -f "$APP_DIR/.venv/bin/python" ]]; then
+  rm -rf "$APP_DIR/.venv"
+  python3 -m venv "$APP_DIR/.venv"
+fi
 "$APP_DIR/.venv/bin/python" -m pip install --upgrade pip
 "$APP_DIR/.venv/bin/python" -m pip install -r "$APP_DIR/requirements.txt"
 
