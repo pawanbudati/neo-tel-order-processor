@@ -5,13 +5,12 @@ set -Eeuo pipefail
 # Manual Deployment Script for Consumer (Neo Kotak Order Processor)
 # Matches GitHub Actions (.github/workflows/deploy.yml)
 # Usage:
-#   ./deploy/manual_deploy.sh [target] [options]
+#   ./deploy/manual_deploy.sh [target]
 # Targets:
-#   primary (default if only primary configured)
 #   yuva
 #   pavan
 #   sahi
-#   all     (deploys to all configured VMs)
+#   all     (deploys to all configured VMs: yuva, pavan, sahi)
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -102,18 +101,11 @@ deploy_to_target() {
   echo ""
 }
 
-# Resolve defaults
+# Resolve shared defaults
 DEFAULT_USER="${GCP_VM_USER:-${VM_USER:-}}"
 DEFAULT_KEY="${GCP_VM_SSH_KEY:-${SSH_KEY_PATH:-}}"
 DEFAULT_PORT="${GCP_VM_SSH_PORT:-${VM_PORT:-22}}"
 DEFAULT_PATH="${CONSUMER_DEPLOY_PATH:-${DEPLOY_PATH:-}}"
-
-# Resolve Primary VM configuration
-PRIMARY_HOST="${GCP_VM_HOST:-${VM_HOST:-}}"
-PRIMARY_USER="${DEFAULT_USER}"
-PRIMARY_KEY="${DEFAULT_KEY}"
-PRIMARY_PORT="${DEFAULT_PORT}"
-PRIMARY_PATH="${DEFAULT_PATH}"
 
 # Resolve Yuva VM configuration
 YUVA_HOST="${GCP_VM_HOST_YUVA:-${VM_HOST_YUVA:-}}"
@@ -137,9 +129,6 @@ SAHI_PORT="${GCP_VM_SSH_PORT_SAHI:-${VM_PORT_SAHI:-$DEFAULT_PORT}}"
 SAHI_PATH="${CONSUMER_DEPLOY_PATH_SAHI:-${DEPLOY_PATH_SAHI:-$DEFAULT_PATH}}"
 
 case "$TARGET" in
-  primary)
-    deploy_to_target "Primary VM" "$PRIMARY_HOST" "$PRIMARY_USER" "$PRIMARY_KEY" "$PRIMARY_PORT" "$PRIMARY_PATH"
-    ;;
   yuva)
     deploy_to_target "Yuva VM" "$YUVA_HOST" "$YUVA_USER" "$YUVA_KEY" "$YUVA_PORT" "$YUVA_PATH"
     ;;
@@ -151,10 +140,6 @@ case "$TARGET" in
     ;;
   all)
     count=0
-    if [[ -n "$PRIMARY_HOST" ]]; then
-      deploy_to_target "Primary VM" "$PRIMARY_HOST" "$PRIMARY_USER" "$PRIMARY_KEY" "$PRIMARY_PORT" "$PRIMARY_PATH"
-      ((count++))
-    fi
     if [[ -n "$YUVA_HOST" ]]; then
       deploy_to_target "Yuva VM" "$YUVA_HOST" "$YUVA_USER" "$YUVA_KEY" "$YUVA_PORT" "$YUVA_PATH"
       ((count++))
@@ -168,12 +153,12 @@ case "$TARGET" in
       ((count++))
     fi
     if [[ $count -eq 0 ]]; then
-      echo "Error: No VM hosts configured. Define GCP_VM_HOST in deploy.env." >&2
+      echo "Error: No consumer VM hosts configured (set GCP_VM_HOST_YUVA, GCP_VM_HOST_PAVAN, or GCP_VM_HOST_SAHI)." >&2
       exit 1
     fi
     ;;
   *)
-    echo "Unknown target '$TARGET'. Use: primary, yuva, pavan, sahi, or all." >&2
+    echo "Unknown target '$TARGET'. Use: yuva, pavan, sahi, or all." >&2
     exit 1
     ;;
 esac

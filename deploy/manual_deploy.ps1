@@ -4,21 +4,22 @@
     Matches GitHub Actions (.github/workflows/deploy.yml).
 
 .DESCRIPTION
-    Syncs repository files to GCP VMs (excluding .venv, .env, git, logs) and executes remote deploy.sh.
+    Syncs repository files to GCP Consumer VMs (Yuva, Pavan, Sahi) and executes remote deploy.sh.
     Uses built-in Windows OpenSSH and tar.exe (or rsync if available).
 
 .PARAMETER Target
-    Deployment target: 'primary', 'yuva', 'pavan', 'sahi', or 'all' (default).
+    Deployment target: 'yuva', 'pavan', 'sahi', or 'all' (default).
 
 .EXAMPLE
     .\deploy\manual_deploy.ps1
+    .\deploy\manual_deploy.ps1 -Target yuva
     .\deploy\manual_deploy.ps1 -Target pavan
     .\deploy\manual_deploy.ps1 -Target sahi
 #>
 
 [CmdletBinding()]
 param(
-    [ValidateSet('primary', 'yuva', 'pavan', 'sahi', 'all')]
+    [ValidateSet('yuva', 'pavan', 'sahi', 'all')]
     [string]$Target = 'all',
 
     [string]$VmHost = $null,
@@ -154,13 +155,6 @@ $defaultKey  = if ($SshKey) { $SshKey } elseif ($env:GCP_VM_SSH_KEY) { $env:GCP_
 $defaultPort = if ($Port -gt 0) { $Port } elseif ($env:GCP_VM_SSH_PORT) { [int]$env:GCP_VM_SSH_PORT } elseif ($env:VM_PORT) { [int]$env:VM_PORT } else { 22 }
 $defaultPath = if ($DeployPath) { $DeployPath } elseif ($env:CONSUMER_DEPLOY_PATH) { $env:CONSUMER_DEPLOY_PATH } else { $env:DEPLOY_PATH }
 
-# Primary VM
-$primaryHost = if ($VmHost) { $VmHost } elseif ($env:GCP_VM_HOST) { $env:GCP_VM_HOST } else { $env:VM_HOST }
-$primaryUser = $defaultUser
-$primaryKey  = $defaultKey
-$primaryPort = $defaultPort
-$primaryPath = $defaultPath
-
 # Yuva VM
 $yuvaHost = if ($env:GCP_VM_HOST_YUVA) { $env:GCP_VM_HOST_YUVA } else { $env:VM_HOST_YUVA }
 $yuvaUser = if ($env:GCP_VM_USER_YUVA) { $env:GCP_VM_USER_YUVA } else { $defaultUser }
@@ -183,9 +177,6 @@ $sahiPort = if ($env:GCP_VM_SSH_PORT_SAHI) { [int]$env:GCP_VM_SSH_PORT_SAHI } el
 $sahiPath = if ($env:CONSUMER_DEPLOY_PATH_SAHI) { $env:CONSUMER_DEPLOY_PATH_SAHI } else { $defaultPath }
 
 switch ($Target) {
-    'primary' {
-        Invoke-DeployTarget "Primary VM" $primaryHost $primaryUser $primaryKey $primaryPort $primaryPath
-    }
     'yuva' {
         Invoke-DeployTarget "Yuva VM" $yuvaHost $yuvaUser $yuvaKey $yuvaPort $yuvaPath
     }
@@ -196,7 +187,6 @@ switch ($Target) {
         Invoke-DeployTarget "Sahi VM" $sahiHost $sahiUser $sahiKey $sahiPort $sahiPath
     }
     'all' {
-        if ($primaryHost) { Invoke-DeployTarget "Primary VM" $primaryHost $primaryUser $primaryKey $primaryPort $primaryPath }
         if ($yuvaHost)    { Invoke-DeployTarget "Yuva VM" $yuvaHost $yuvaUser $yuvaKey $yuvaPort $yuvaPath }
         if ($pavanHost)   { Invoke-DeployTarget "Pavan VM" $pavanHost $pavanUser $pavanKey $pavanPort $pavanPath }
         if ($sahiHost)    { Invoke-DeployTarget "Sahi VM" $sahiHost $sahiUser $sahiKey $sahiPort $sahiPath }
