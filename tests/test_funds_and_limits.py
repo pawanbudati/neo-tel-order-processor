@@ -124,3 +124,27 @@ def test_order_manager_fallback_when_funds_fail():
     assert res["order_id"] == "1001"
     # Fallback to default_lots (2 lots -> 2 * 65 = 130 qty)
     assert res["quantity"] == 130
+
+
+def test_resolve_symbol_handles_acc_tag_and_unusual_dates():
+    client = KotakClient.__new__(KotakClient)
+    client.account_id = "yuva"
+    client.client = MagicMock()
+    client.is_authenticated = True
+
+    # Scrip search returning results with missing or ISO datetime format
+    client.client.search_scrip.return_value = [
+        {
+            "pSymbolName": "NIFTY",
+            "pTrdSymbol": "NIFTY26N0624400PE",
+            "pExpiryDate": "2026-11-06 00:00:00",
+            "lLotSize": "65",
+            "pSymbol": "12345"
+        }
+    ]
+
+    res = client.resolve_symbol("NIFTY", 24400.0, "PE")
+    assert res["trading_symbol"] == "NIFTY26N0624400PE"
+    assert res["lot_size"] == 65
+    assert res["instrument_token"] == "12345"
+

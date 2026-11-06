@@ -62,6 +62,10 @@ class KotakClient:
             raise RuntimeError("kotakneoapi is not installed; live consumer startup aborted")
         self._init_live_client()
 
+    @property
+    def acc_tag(self) -> str:
+        return f"[{self.account_id}] " if self.account_id != "default" else ""
+
     def _init_live_client(self):
         """Initializes and authenticates with Kotak Neo API."""
         acc_tag = f"[{self.account_id}] " if self.account_id != "default" else ""
@@ -117,7 +121,8 @@ class KotakClient:
         Resolves the exact exchange segment and trading symbol for a given option contract.
         Picks the nearest upcoming active expiry by default and extracts scrip lot size.
         """
-        from datetime import datetime
+        from datetime import datetime, date
+        acc_tag = self.acc_tag
         idx = index.upper().strip()
         opt = option_type.upper().strip()
         strike_int = int(strike)
@@ -150,38 +155,70 @@ class KotakClient:
                         "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
                         "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12
                     }
+                    _NSE_MONTH_CODE = {
+                        "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+                        "o": 10, "n": 11, "d": 12
+                    }
 
                     def parse_expiry(item):
-                        exp_str = item.get("pExpiryDate") or item.get("expiryDate") or item.get("pExpiry")
-                        if not exp_str:
-                            return datetime.max
-                        exp_str = str(exp_str).strip()
                         import re
-                        m = re.match(r"^(\d{1,2})[- /]?([A-Za-z]{3})[- /]?(\d{2,4})$", exp_str)
-                        if m:
-                            day = int(m.group(1))
-                            mon_str = m.group(2).lower()
-                            yr = int(m.group(3))
-                            if yr < 100:
-                                yr += 2000
-                            if mon_str in _MONTHS:
+                        val = item.get("pExpiryDate") or item.get("expiryDate") or item.get("pExpiry")
+                        if isinstance(val, datetime):
+                            return val
+                        if isinstance(val, date):
+                            return datetime.combine(val, datetime.min.time())
+                        if val:
+                            exp_str = str(val).strip()
+                            clean_date_str = exp_str.split()[0].replace(",", "")
+                            m = re.match(r"^(\d{1,2})[- /]?([A-Za-z]{3})[- /]?(\d{2,4})$", clean_date_str)
+                            if m:
+                                day = int(m.group(1))
+                                mon_str = m.group(2).lower()
+                                yr = int(m.group(3))
+                                if yr < 100:
+                                    yr += 2000
+                                if mon_str in _MONTHS:
+                                    try:
+                                        return datetime(yr, _MONTHS[mon_str], day)
+                                    except Exception:
+                                        pass
+                            for fmt in ("%d%b%Y", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
                                 try:
-                                    return datetime(yr, _MONTHS[mon_str], day)
+                                    return datetime.strptime(clean_date_str, fmt)
                                 except Exception:
                                     pass
-                        for fmt in ("%d%b%Y", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
-                            try:
-                                return datetime.strptime(exp_str, fmt)
-                            except Exception:
-                                pass
-                        if exp_str.isdigit():
-                            try:
-                                ts = int(exp_str)
-                                if ts > 1e11:
-                                    ts /= 1000
-                                return datetime.fromtimestamp(ts)
-                            except Exception:
-                                pass
+                            if exp_str.isdigit():
+                                try:
+                                    ts = int(exp_str)
+                                    if ts > 1e11:
+                                        ts /= 1000
+                                    return datetime.fromtimestamp(ts)
+                                except Exception:
+                                    pass
+
+                        # Fallback: extract expiry date from trading symbol
+                        sym = item.get("pTrdSymbol", "").upper().strip()
+                        # Weekly format (e.g. NIFTY26N0624400PE -> 2026-Nov-06)
+                        m_sym = re.search(r"(\d{2})([1-9OND])(\d{2})\d+(?:CE|PE)$", sym)
+                        if m_sym:
+                            yr = 2000 + int(m_sym.group(1))
+                            m_code = m_sym.group(2).lower()
+                            day = int(m_sym.group(3))
+                            if m_code in _NSE_MONTH_CODE:
+                                try:
+                                    return datetime(yr, _NSE_MONTH_CODE[m_code], day)
+                                except Exception:
+                                    pass
+                        # Monthly format (e.g. NIFTY26NOV24400PE -> 2026-Nov-28)
+                        m_sym_m = re.search(r"(\d{2})([A-Z]{3})\d+(?:CE|PE)$", sym)
+                        if m_sym_m:
+                            yr = 2000 + int(m_sym_m.group(1))
+                            mon = m_sym_m.group(2).lower()
+                            if mon in _MONTHS:
+                                try:
+                                    return datetime(yr, _MONTHS[mon], 28)
+                                except Exception:
+                                    pass
                         return datetime.max
 
                     # Only trade contracts whose expiry is known and still active.
