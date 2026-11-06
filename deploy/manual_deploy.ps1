@@ -8,27 +8,17 @@
     Uses built-in Windows OpenSSH and tar.exe (or rsync if available).
 
 .PARAMETER Target
-    Deployment target: 'primary', 'yuva', or 'all' (default).
-
-.PARAMETER VmHost
-    Override Host IP/DNS for Primary VM.
-
-.PARAMETER VmUser
-    Override SSH User.
-
-.PARAMETER SshKey
-    Path to private SSH key.
+    Deployment target: 'primary', 'yuva', 'pavan', 'sahi', or 'all' (default).
 
 .EXAMPLE
     .\deploy\manual_deploy.ps1
-    .\deploy\manual_deploy.ps1 -Target primary
-    .\deploy\manual_deploy.ps1 -Target yuva
-    .\deploy\manual_deploy.ps1 -Target primary -VmHost "34.93.x.x" -VmUser "pawanbudati"
+    .\deploy\manual_deploy.ps1 -Target pavan
+    .\deploy\manual_deploy.ps1 -Target sahi
 #>
 
 [CmdletBinding()]
 param(
-    [ValidateSet('primary', 'yuva', 'all')]
+    [ValidateSet('primary', 'yuva', 'pavan', 'sahi', 'all')]
     [string]$Target = 'all',
 
     [string]$VmHost = $null,
@@ -86,7 +76,7 @@ function Invoke-DeployTarget {
     )
 
     if (-not $HostName -or -not $UserName) {
-        Write-Error "Host and User must be configured for target '$TargetName'."
+        Write-Host "Skipping [$TargetName]: Host or User is not configured." -ForegroundColor Yellow
         return
     }
 
@@ -128,7 +118,6 @@ function Invoke-DeployTarget {
             "$rootDir/" "${UserName}@${HostName}:${RemoteDir}/"
     } else {
         Write-Host ">>> Syncing files via tar over SSH stream..." -ForegroundColor Yellow
-        # Build tar archive in memory and stream to remote ssh
         $excludes = @(
             "--exclude=.git",
             "--exclude=.env",
@@ -159,18 +148,39 @@ function Invoke-DeployTarget {
     Write-Host ">>> Deployment to [$TargetName] succeeded!" -ForegroundColor Green
 }
 
-# Resolve settings
-$primaryHost = if ($VmHost) { $VmHost } elseif ($env:GCP_VM_HOST) { $env:GCP_VM_HOST } else { $env:VM_HOST }
-$primaryUser = if ($VmUser) { $VmUser } elseif ($env:GCP_VM_USER) { $env:GCP_VM_USER } else { $env:VM_USER }
-$primaryKey  = if ($SshKey) { $SshKey } elseif ($env:GCP_VM_SSH_KEY) { $env:GCP_VM_SSH_KEY } else { $env:SSH_KEY_PATH }
-$primaryPort = if ($Port -gt 0) { $Port } elseif ($env:GCP_VM_SSH_PORT) { [int]$env:GCP_VM_SSH_PORT } elseif ($env:VM_PORT) { [int]$env:VM_PORT } else { 22 }
-$primaryPath = if ($DeployPath) { $DeployPath } elseif ($env:CONSUMER_DEPLOY_PATH) { $env:CONSUMER_DEPLOY_PATH } else { $env:DEPLOY_PATH }
+# Resolve defaults
+$defaultUser = if ($VmUser) { $VmUser } elseif ($env:GCP_VM_USER) { $env:GCP_VM_USER } else { $env:VM_USER }
+$defaultKey  = if ($SshKey) { $SshKey } elseif ($env:GCP_VM_SSH_KEY) { $env:GCP_VM_SSH_KEY } else { $env:SSH_KEY_PATH }
+$defaultPort = if ($Port -gt 0) { $Port } elseif ($env:GCP_VM_SSH_PORT) { [int]$env:GCP_VM_SSH_PORT } elseif ($env:VM_PORT) { [int]$env:VM_PORT } else { 22 }
+$defaultPath = if ($DeployPath) { $DeployPath } elseif ($env:CONSUMER_DEPLOY_PATH) { $env:CONSUMER_DEPLOY_PATH } else { $env:DEPLOY_PATH }
 
+# Primary VM
+$primaryHost = if ($VmHost) { $VmHost } elseif ($env:GCP_VM_HOST) { $env:GCP_VM_HOST } else { $env:VM_HOST }
+$primaryUser = $defaultUser
+$primaryKey  = $defaultKey
+$primaryPort = $defaultPort
+$primaryPath = $defaultPath
+
+# Yuva VM
 $yuvaHost = if ($env:GCP_VM_HOST_YUVA) { $env:GCP_VM_HOST_YUVA } else { $env:VM_HOST_YUVA }
-$yuvaUser = if ($env:GCP_VM_USER_YUVA) { $env:GCP_VM_USER_YUVA } elseif ($env:VM_USER_YUVA) { $env:VM_USER_YUVA } else { $primaryUser }
-$yuvaKey  = if ($env:GCP_VM_SSH_KEY_YUVA) { $env:GCP_VM_SSH_KEY_YUVA } elseif ($env:SSH_KEY_PATH_YUVA) { $env:SSH_KEY_PATH_YUVA } else { $primaryKey }
-$yuvaPort = if ($env:GCP_VM_SSH_PORT_YUVA) { [int]$env:GCP_VM_SSH_PORT_YUVA } elseif ($env:VM_PORT_YUVA) { [int]$env:VM_PORT_YUVA } else { $primaryPort }
-$yuvaPath = if ($env:CONSUMER_DEPLOY_PATH_YUVA) { $env:CONSUMER_DEPLOY_PATH_YUVA } elseif ($env:DEPLOY_PATH_YUVA) { $env:DEPLOY_PATH_YUVA } else { $primaryPath }
+$yuvaUser = if ($env:GCP_VM_USER_YUVA) { $env:GCP_VM_USER_YUVA } else { $defaultUser }
+$yuvaKey  = if ($env:GCP_VM_SSH_KEY_YUVA) { $env:GCP_VM_SSH_KEY_YUVA } else { $defaultKey }
+$yuvaPort = if ($env:GCP_VM_SSH_PORT_YUVA) { [int]$env:GCP_VM_SSH_PORT_YUVA } else { $defaultPort }
+$yuvaPath = if ($env:CONSUMER_DEPLOY_PATH_YUVA) { $env:CONSUMER_DEPLOY_PATH_YUVA } else { $defaultPath }
+
+# Pavan VM
+$pavanHost = if ($env:GCP_VM_HOST_PAVAN) { $env:GCP_VM_HOST_PAVAN } else { $env:VM_HOST_PAVAN }
+$pavanUser = if ($env:GCP_VM_USER_PAVAN) { $env:GCP_VM_USER_PAVAN } else { $defaultUser }
+$pavanKey  = if ($env:GCP_VM_SSH_KEY_PAVAN) { $env:GCP_VM_SSH_KEY_PAVAN } else { $defaultKey }
+$pavanPort = if ($env:GCP_VM_SSH_PORT_PAVAN) { [int]$env:GCP_VM_SSH_PORT_PAVAN } else { $defaultPort }
+$pavanPath = if ($env:CONSUMER_DEPLOY_PATH_PAVAN) { $env:CONSUMER_DEPLOY_PATH_PAVAN } else { $defaultPath }
+
+# Sahi VM
+$sahiHost = if ($env:GCP_VM_HOST_SAHI) { $env:GCP_VM_HOST_SAHI } else { $env:VM_HOST_SAHI }
+$sahiUser = if ($env:GCP_VM_USER_SAHI) { $env:GCP_VM_USER_SAHI } else { $defaultUser }
+$sahiKey  = if ($env:GCP_VM_SSH_KEY_SAHI) { $env:GCP_VM_SSH_KEY_SAHI } else { $defaultKey }
+$sahiPort = if ($env:GCP_VM_SSH_PORT_SAHI) { [int]$env:GCP_VM_SSH_PORT_SAHI } else { $defaultPort }
+$sahiPath = if ($env:CONSUMER_DEPLOY_PATH_SAHI) { $env:CONSUMER_DEPLOY_PATH_SAHI } else { $defaultPath }
 
 switch ($Target) {
     'primary' {
@@ -179,15 +189,16 @@ switch ($Target) {
     'yuva' {
         Invoke-DeployTarget "Yuva VM" $yuvaHost $yuvaUser $yuvaKey $yuvaPort $yuvaPath
     }
+    'pavan' {
+        Invoke-DeployTarget "Pavan VM" $pavanHost $pavanUser $pavanKey $pavanPort $pavanPath
+    }
+    'sahi' {
+        Invoke-DeployTarget "Sahi VM" $sahiHost $sahiUser $sahiKey $sahiPort $sahiPath
+    }
     'all' {
-        if ($primaryHost) {
-            Invoke-DeployTarget "Primary VM" $primaryHost $primaryUser $primaryKey $primaryPort $primaryPath
-        }
-        if ($yuvaHost) {
-            Invoke-DeployTarget "Yuva VM" $yuvaHost $yuvaUser $yuvaKey $yuvaPort $yuvaPath
-        }
-        if (-not $primaryHost -and -not $yuvaHost) {
-            Write-Error "No host configuration found. Define GCP_VM_HOST in .env.deploy or pass -VmHost."
-        }
+        if ($primaryHost) { Invoke-DeployTarget "Primary VM" $primaryHost $primaryUser $primaryKey $primaryPort $primaryPath }
+        if ($yuvaHost)    { Invoke-DeployTarget "Yuva VM" $yuvaHost $yuvaUser $yuvaKey $yuvaPort $yuvaPath }
+        if ($pavanHost)   { Invoke-DeployTarget "Pavan VM" $pavanHost $pavanUser $pavanKey $pavanPort $pavanPath }
+        if ($sahiHost)    { Invoke-DeployTarget "Sahi VM" $sahiHost $sahiUser $sahiKey $sahiPort $sahiPath }
     }
 }

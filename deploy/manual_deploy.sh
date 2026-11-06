@@ -9,7 +9,9 @@ set -Eeuo pipefail
 # Targets:
 #   primary (default if only primary configured)
 #   yuva
-#   all     (deploys to primary and yuva)
+#   pavan
+#   sahi
+#   all     (deploys to all configured VMs)
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,8 +43,8 @@ deploy_to_target() {
   local remote_path="${6:-}"
 
   if [[ -z "$host" || -z "$user" ]]; then
-    echo "Error: Host and User must be provided for target '$target_name'." >&2
-    exit 1
+    echo "Skipping [$target_name]: Host or User is not configured."
+    return 0
   fi
 
   if [[ -z "$remote_path" || "$remote_path" == "/home/" ]]; then
@@ -100,19 +102,39 @@ deploy_to_target() {
   echo ""
 }
 
+# Resolve defaults
+DEFAULT_USER="${GCP_VM_USER:-${VM_USER:-}}"
+DEFAULT_KEY="${GCP_VM_SSH_KEY:-${SSH_KEY_PATH:-}}"
+DEFAULT_PORT="${GCP_VM_SSH_PORT:-${VM_PORT:-22}}"
+DEFAULT_PATH="${CONSUMER_DEPLOY_PATH:-${DEPLOY_PATH:-}}"
+
 # Resolve Primary VM configuration
 PRIMARY_HOST="${GCP_VM_HOST:-${VM_HOST:-}}"
-PRIMARY_USER="${GCP_VM_USER:-${VM_USER:-}}"
-PRIMARY_KEY="${GCP_VM_SSH_KEY:-${SSH_KEY_PATH:-}}"
-PRIMARY_PORT="${GCP_VM_SSH_PORT:-${VM_PORT:-22}}"
-PRIMARY_PATH="${CONSUMER_DEPLOY_PATH:-${DEPLOY_PATH:-}}"
+PRIMARY_USER="${DEFAULT_USER}"
+PRIMARY_KEY="${DEFAULT_KEY}"
+PRIMARY_PORT="${DEFAULT_PORT}"
+PRIMARY_PATH="${DEFAULT_PATH}"
 
 # Resolve Yuva VM configuration
 YUVA_HOST="${GCP_VM_HOST_YUVA:-${VM_HOST_YUVA:-}}"
-YUVA_USER="${GCP_VM_USER_YUVA:-${VM_USER_YUVA:-$PRIMARY_USER}}"
-YUVA_KEY="${GCP_VM_SSH_KEY_YUVA:-${SSH_KEY_PATH_YUVA:-$PRIMARY_KEY}}"
-YUVA_PORT="${GCP_VM_SSH_PORT_YUVA:-${VM_PORT_YUVA:-$PRIMARY_PORT}}"
-YUVA_PATH="${CONSUMER_DEPLOY_PATH_YUVA:-${DEPLOY_PATH_YUVA:-$PRIMARY_PATH}}"
+YUVA_USER="${GCP_VM_USER_YUVA:-${VM_USER_YUVA:-$DEFAULT_USER}}"
+YUVA_KEY="${GCP_VM_SSH_KEY_YUVA:-${SSH_KEY_PATH_YUVA:-$DEFAULT_KEY}}"
+YUVA_PORT="${GCP_VM_SSH_PORT_YUVA:-${VM_PORT_YUVA:-$DEFAULT_PORT}}"
+YUVA_PATH="${CONSUMER_DEPLOY_PATH_YUVA:-${DEPLOY_PATH_YUVA:-$DEFAULT_PATH}}"
+
+# Resolve Pavan VM configuration
+PAVAN_HOST="${GCP_VM_HOST_PAVAN:-${VM_HOST_PAVAN:-}}"
+PAVAN_USER="${GCP_VM_USER_PAVAN:-${VM_USER_PAVAN:-$DEFAULT_USER}}"
+PAVAN_KEY="${GCP_VM_SSH_KEY_PAVAN:-${SSH_KEY_PATH_PAVAN:-$DEFAULT_KEY}}"
+PAVAN_PORT="${GCP_VM_SSH_PORT_PAVAN:-${VM_PORT_PAVAN:-$DEFAULT_PORT}}"
+PAVAN_PATH="${CONSUMER_DEPLOY_PATH_PAVAN:-${DEPLOY_PATH_PAVAN:-$DEFAULT_PATH}}"
+
+# Resolve Sahi VM configuration
+SAHI_HOST="${GCP_VM_HOST_SAHI:-${VM_HOST_SAHI:-}}"
+SAHI_USER="${GCP_VM_USER_SAHI:-${VM_USER_SAHI:-$DEFAULT_USER}}"
+SAHI_KEY="${GCP_VM_SSH_KEY_SAHI:-${SSH_KEY_PATH_SAHI:-$DEFAULT_KEY}}"
+SAHI_PORT="${GCP_VM_SSH_PORT_SAHI:-${VM_PORT_SAHI:-$DEFAULT_PORT}}"
+SAHI_PATH="${CONSUMER_DEPLOY_PATH_SAHI:-${DEPLOY_PATH_SAHI:-$DEFAULT_PATH}}"
 
 case "$TARGET" in
   primary)
@@ -121,19 +143,37 @@ case "$TARGET" in
   yuva)
     deploy_to_target "Yuva VM" "$YUVA_HOST" "$YUVA_USER" "$YUVA_KEY" "$YUVA_PORT" "$YUVA_PATH"
     ;;
+  pavan)
+    deploy_to_target "Pavan VM" "$PAVAN_HOST" "$PAVAN_USER" "$PAVAN_KEY" "$PAVAN_PORT" "$PAVAN_PATH"
+    ;;
+  sahi)
+    deploy_to_target "Sahi VM" "$SAHI_HOST" "$SAHI_USER" "$SAHI_KEY" "$SAHI_PORT" "$SAHI_PATH"
+    ;;
   all)
+    count=0
     if [[ -n "$PRIMARY_HOST" ]]; then
       deploy_to_target "Primary VM" "$PRIMARY_HOST" "$PRIMARY_USER" "$PRIMARY_KEY" "$PRIMARY_PORT" "$PRIMARY_PATH"
+      ((count++))
     fi
     if [[ -n "$YUVA_HOST" ]]; then
       deploy_to_target "Yuva VM" "$YUVA_HOST" "$YUVA_USER" "$YUVA_KEY" "$YUVA_PORT" "$YUVA_PATH"
-    elif [[ -z "$PRIMARY_HOST" ]]; then
-      echo "Error: Neither primary nor yuva host is set. Configure .env.deploy or set GCP_VM_HOST." >&2
+      ((count++))
+    fi
+    if [[ -n "$PAVAN_HOST" ]]; then
+      deploy_to_target "Pavan VM" "$PAVAN_HOST" "$PAVAN_USER" "$PAVAN_KEY" "$PAVAN_PORT" "$PAVAN_PATH"
+      ((count++))
+    fi
+    if [[ -n "$SAHI_HOST" ]]; then
+      deploy_to_target "Sahi VM" "$SAHI_HOST" "$SAHI_USER" "$SAHI_KEY" "$SAHI_PORT" "$SAHI_PATH"
+      ((count++))
+    fi
+    if [[ $count -eq 0 ]]; then
+      echo "Error: No VM hosts configured. Define GCP_VM_HOST in deploy.env." >&2
       exit 1
     fi
     ;;
   *)
-    echo "Unknown target '$TARGET'. Use: primary, yuva, or all." >&2
+    echo "Unknown target '$TARGET'. Use: primary, yuva, pavan, sahi, or all." >&2
     exit 1
     ;;
 esac
