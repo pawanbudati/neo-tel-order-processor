@@ -1,129 +1,151 @@
 # Kotak Neo Order Consumer
 
-The **Kotak Order Consumer** is an account-level automated trade execution engine for Indian derivatives (NIFTY / BANKNIFTY / SENSEX options). It consumes trading signals from an Apache Kafka broker, resolves live contracts and active expiries, calculates position sizing, and executes real-time orders through the **Kotak Neo API**.
+A high-performance, account-level algorithmic trade execution engine for Indian derivatives (NIFTY, BANKNIFTY, SENSEX, FINNIFTY) built on the **Kotak Neo API** and **Apache Kafka**.
+
+The consumer subscribes to incoming trading signals published by the Signal Producer, resolves live exchange scrips and active contract expiries, sizes positions, and manages the complete trade lifecycle (entry, staged profit targets, trailing stop-losses, and emergency exits).
 
 > [!WARNING]
-> **Live Trading Daemon:** This service places real market and stop-limit orders with your broker. Verify all risk management limits, account credentials, and lot sizes before running in production.
+> **Live Trading Daemon:** This service places real orders on your Kotak Securities trading account. Always verify your account credentials, risk parameters, product type, and lot sizing before running in production.
 
 ---
 
-## Architecture
+## Architecture & Multi-Account Fanout
 
 ```mermaid
-flowchart LR
-    KF[(Kafka Topic: kotak_trading_signals)] -->|Group: kotak_executor_yuva| C1[Yuva Consumer VM\nAccount: yuva]
-    KF -->|Group: kotak_executor_pavan| C2[Pavan Consumer VM\nAccount: pavan]
-    KF -->|Group: kotak_executor_sahi| C3[Sahi Consumer VM\nAccount: sahi]
-    
-    C1 -->|REST & Websockets| KN1[Kotak Neo API - Account 1]
-    C2 -->|REST & Websockets| KN2[Kotak Neo API - Account 2]
-    C3 -->|REST & Websockets| KN3[Kotak Neo API - Account 3]
+flowchart TD
+    subgraph Signal Pipeline
+        KP[Telegram Signal Producer] -->|Publish Signal| KB[(Apache Kafka Topic\nkotak_trading_signals)]
+    end
+
+    subgraph Kafka Consumer Fanout
+        KB -->|Group: kotak_executor_yuva| VM1[Yuva Consumer VM\nAccount: yuva]
+        KB -->|Group: kotak_executor_pavan| VM2[Pavan Consumer VM\nAccount: pavan]
+        KB -->|Group: kotak_executor_sahi| VM3[Sahi Consumer VM\nAccount: sahi]
+    end
+
+    subgraph Execution Layer
+        VM1 -->|REST & WebSockets| KN1[Kotak Neo API - Account 1]
+        VM2 -->|REST & WebSockets| KN2[Kotak Neo API - Account 2]
+        VM3 -->|REST & WebSockets| KN3[Kotak Neo API - Account 3]
+    end
 ```
 
 ### Multi-Account & Multi-VM Isolation
 - **Independent Consumer Groups**: Every consumer VM runs with its own distinct `KAFKA_CONSUMER_GROUP_ID` (e.g. `kotak_executor_yuva`, `kotak_executor_pavan`, `kotak_executor_sahi`).
-- **Full Signal Duplication**: In Kafka, each consumer group receives its own independent copy of every message. An order execution, fill, or failure on one account has zero impact on other accounts.
+- **Full Signal Duplication**: Kafka automatically fans out every trading signal to all active consumer groups simultaneously. An execution delay, rejection, or insufficient fund error on one account has zero impact on the others.
 
 ---
 
-## Order Management & Strategy Features
+## Key Execution & Strategy Features
 
 ### 1. Robust Scrip & Expiry Resolution
-- Resolves active weekly/monthly option contracts via Kotak Neo scrip master.
-- Features locale-independent regex parsing for date and month formats to prevent month/date parsing failures.
+- Fetches and caches the official Kotak Neo scrip master.
+- Features resilient regex-based date matching (`ddMMMyyyy`) for weekly and monthly expiries, with automatic fallback search across active trading symbols.
 
 ### 2. Multi-Target Staged Exits & Trailing Stop-Loss
-- **Entry Sizing**: Defaults to multiples of 3 lots (e.g. 3, 6, 9 lots) or risk-based sizing.
-- **Protective Stop-Loss**: Places a protective sell stop-limit order immediately upon entry fill.
-- **Trailing Milestones**:
-  - **Target 1 reached**: Sells 1/3 quantity; moves protective stop on remaining lots to the average entry price (cost-to-cost).
-  - **Target 2 reached**: Sells 1/3 quantity; moves protective stop to Target 1.
-  - **Target 3 reached**: Closes the remaining position.
+- **Lot Sizing**: Defaults to multiples of 3 lots (e.g., 3, 6, 9 lots) or risk-based sizing.
+- **Protective Stop-Loss**: Immediately places a protective sell stop-limit order upon entry order fill.
+- **Dynamic Trailing Milestones**:
+  - **Target 1 reached**: Executes a partial exit of 1/3 quantity; trails protective stop on remaining 2/3 lots to the average entry price (cost-to-cost / risk-free).
+  - **Target 2 reached**: Executes a partial exit of 1/3 quantity; trails protective stop to Target 1.
+  - **Target 3 reached**: Squares off the remaining position.
 
 ### 3. Immediate Market Exit on Any Exit Signal
-When an exit instruction arrives (e.g. *"Exit at cost to cost"*, *"Exit @253"*, *"close position"*, *"square off"*, or *"exit"*):
-- If the position is open (`open_quantity > 0`):
-  1. **Cancels the active protective stop-loss order** and any pending target exits on Kotak Neo.
-  2. Submits an **immediate Market SELL order** for the entire open quantity.
-  3. Transitions trade state to `CLOSED`.
-- If the entry order is still pending (unfilled): cleanly cancels the pending entry order.
+When an exit or cancellation instruction arrives (*"Exit at cost to cost"*, *"Exit @253"*, *"close position"*, *"square off"*, or *"exit"*):
+- If the trade is currently filled/open (`open_quantity > 0`):
+  1. Immediately cancels the active protective stop-loss and pending target orders with the broker.
+  2. Submits an instantaneous **Market SELL order** for the entire open quantity.
+  3. Updates trade state to `CLOSED`.
+- If the entry order is still pending/unfilled: cancels the pending limit order cleanly.
+
+### 4. Asyncio Concurrency & Kafka Resilience
+- **Thread Pool Offloading (`asyncio.to_thread`)**: Kotak API operations (scrip search, order placement, 401 re-authentication) perform synchronous HTTP calls. These run in background worker threads so the main `asyncio` event loop is **never blocked**.
+- **Heartbeat Protection**: Kafka broker heartbeat pings continue ticking on schedule, completely eliminating `UnknownMemberIdError` and `CommitFailedError` during broker API latency.
+- **Tuned Kafka Timeouts**:
+  - `session_timeout_ms = 30000` (30 seconds)
+  - `heartbeat_interval_ms = 5000` (5 seconds)
+  - `max_poll_interval_ms = 300000` (5 minutes)
+- **Defensive Offset Commits**: Offset commit errors are caught gracefully, preventing unhandled service crashes.
 
 ---
 
-## Configuration (`.env`)
+## Configuration Reference (`.env`)
 
-Each VM maintains its own private `.env` file at `/home/<user>/apps/neo-tel-order-processor/.env`:
+Each VM maintains its dedicated `.env` configuration file at:  
+`/home/<user>/apps/neo-tel-order-processor/.env`
 
-| Variable | Description |
-| :--- | :--- |
-| `ACCOUNT_ID` | Account identifier shown in logs (e.g., `yuva`, `pavan`, `sahi`). |
-| `KAFKA_CONSUMER_GROUP_ID` | Unique Kafka consumer group (e.g., `kotak_executor_yuva`). |
-| `KAFKA_BOOTSTRAP_SERVERS` | Remote Kafka address (e.g., `<OCI_KAFKA_PUBLIC_IP>:9092`). |
-| `KAFKA_TOPIC_SIGNALS` | Kafka topic name (defaults to `kotak_trading_signals`). |
-| `KOTAK_CONSUMER_KEY` | Kotak Neo Consumer API Key. |
-| `KOTAK_CONSUMER_SECRET` | Kotak Neo Consumer Secret. |
-| `KOTAK_MOBILE_NUMBER` | Registered mobile number. |
-| `KOTAK_UCC` | Unique Client Code (UCC). |
-| `KOTAK_PASSWORD` | Kotak account password. |
-| `KOTAK_TOTP_KEY` | Base32 TOTP Secret Key (used to auto-generate 6-digit TOTP). |
-| `KOTAK_MPIN` | 6-digit MPIN. |
-| `DEFAULT_LOTS` | Default order size (default: `3`). |
-| `DEFAULT_PRODUCT_TYPE` | `MIS` (Intraday) or `NRML` (Carry Forward). |
-| `SL_LIMIT_BUFFER_PERCENT` | Limit price buffer for stop-limit orders (default: `3.0`). |
+| Variable | Description | Default / Example |
+| :--- | :--- | :--- |
+| `ACCOUNT_ID` | Identifier for this instance shown in logs | `yuva` / `pavan` / `sahi` |
+| `KAFKA_CONSUMER_GROUP_ID` | Unique Kafka consumer group ID for this account | `kotak_executor_yuva` |
+| `KAFKA_BOOTSTRAP_SERVERS` | Remote Kafka broker host:port | `129.225.75.71:9092` |
+| `KAFKA_TOPIC_SIGNALS` | Kafka topic to consume | `kotak_trading_signals` |
+| `KAFKA_AUTO_OFFSET_RESET` | Starting offset when no commit exists | `latest` |
+| `KOTAK_CONSUMER_KEY` | Kotak Neo API Consumer Key | `<your_consumer_key>` |
+| `KOTAK_CONSUMER_SECRET` | Kotak Neo API Consumer Secret | `<your_consumer_secret>` |
+| `KOTAK_MOBILE_NUMBER` | Kotak registered 10-digit mobile number | `+91xxxxxxxxxx` |
+| `KOTAK_UCC` | Kotak Unique Client Code (UCC) | `<your_ucc>` |
+| `KOTAK_PASSWORD` | Kotak account password | `<your_password>` |
+| `KOTAK_TOTP_KEY` | Base32 TOTP secret key for automatic OTP generation | `<base32_totp_key>` |
+| `KOTAK_MPIN` | 6-digit MPIN for 2FA validation | `123456` |
+| `KOTAK_ENVIRONMENT` | API environment | `prod` |
+| `DEFAULT_LOTS` | Default execution lots (recommended multiple of 3) | `3` |
+| `DEFAULT_PRODUCT_TYPE` | Order product type: `MIS` (Intraday) or `NRML` | `MIS` |
+| `SL_LIMIT_BUFFER_PERCENT`| Price buffer percentage for stop-limit trigger orders | `3.0` |
 
 ---
 
 ## Automated Deployment (GitHub Actions)
 
-Deployments are orchestrated via [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and run automatically on push to `main`.
+Deployments are orchestrated via [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and run automatically on push to `main` (or manually via **Run workflow**).
 
-### Active Deployment Targets
-The workflow deploys to all active consumer VMs in parallel:
+### Deployment Matrix
+The workflow deploys to all consumer VMs in parallel:
 - **`deploy-yuva`** $\rightarrow$ Deploys to `GCP_VM_HOST_YUVA`
 - **`deploy-pavan`** $\rightarrow$ Deploys to `GCP_VM_HOST_PAVAN`
 - **`deploy-sahi`** $\rightarrow$ Deploys to `GCP_VM_HOST_SAHI`
 
-### GitHub Settings Setup
-In **Settings $\rightarrow$ Secrets and variables $\rightarrow$ Actions**:
-1. **VM IP Addresses** (as Secrets or Variables):
-   - `GCP_VM_HOST_YUVA`
-   - `GCP_VM_HOST_PAVAN`
-   - `GCP_VM_HOST_SAHI`
-2. **Shared SSH Credentials** (used by all VMs):
-   - `GCP_VM_SSH_KEY`: Private SSH deployment key.
-   - `GCP_VM_USER`: Linux account name (e.g. `pawanbudati`).
-   - `GCP_VM_SSH_PORT`: Optional, defaults to `22`.
-   - `GCP_VM_KNOWN_HOSTS`: SSH host keys.
+### GitHub Secrets & Variables Configuration
+Set these in your GitHub repository (**Settings $\rightarrow$ Secrets and variables $\rightarrow$ Actions**):
 
-### Automated Server Setup Features:
-1. **Self-Healing Environment**: Automatically detects if `python3-venv` or `python3-pip` is missing on fresh Ubuntu VMs and installs them via `apt`.
-2. **Daily 8:00 AM Pre-Market Clean Restart**: Installs a root cron job in `/etc/cron.d/journal-log-cleanup`:
+| Secret / Variable Name | Description |
+| :--- | :--- |
+| `GCP_VM_HOST_YUVA` | Public IP address of the Yuva Consumer VM |
+| `GCP_VM_HOST_PAVAN` | Public IP address of the Pavan Consumer VM |
+| `GCP_VM_HOST_SAHI` | Public IP address of the Sahi Consumer VM |
+| `GCP_VM_USER` | SSH user across all VMs (e.g. `pawanbudati`) |
+| `GCP_VM_SSH_KEY` | Private SSH deployment key (must have access to all consumer VMs) |
+| `GCP_VM_KNOWN_HOSTS` | Known hosts entry containing public keys of all VMs |
+| `LOG_CLEANUP_CRON` *(Optional)* | Custom cron schedule for daily log rotation & restart (default: `0 8 * * *`) |
+
+### Self-Healing & Pre-Market Automation:
+1. **Self-Healing Dependencies**: The deployment script automatically installs `python3-venv` and `python3-pip` via `apt` if missing on fresh Ubuntu/Debian instances.
+2. **Pre-Market Daily Restart & Log Cleanup (8:00 AM IST)**: Automatically installs a root cron job into `/etc/cron.d/journal-log-cleanup`:
    ```cron
    0 8 * * * root journalctl --rotate && journalctl --vacuum-time=1s && systemctl restart neo-tel-order-processor.service >/dev/null 2>&1
    ```
-   **Benefits**:
-   - Triggers fresh daily authentication with Kotak Neo API before market open (re-generating session tokens).
-   - Purges yesterday's journal logs so each day begins with an empty, fast-reading log file.
+   - **Fresh 2FA Tokens**: Kotak Neo session tokens expire daily. Restarting at 8:00 AM ensures the consumer performs a fresh TOTP login and MPIN validation before market open (9:15 AM).
+   - **Zero Log Bloat**: Rotates and vacuums systemd journal logs every morning, keeping logs lightning-fast to read.
 
 ---
 
 ## Manual Deployment (No GitHub Actions)
 
-Deploy to any VM directly from your local terminal using the included scripts:
+Deploy directly from your local terminal to any target VM:
 
 ### From Windows (PowerShell):
 ```powershell
 cd consumer
 
-# Deploy to all 3 VMs (Yuva, Pavan, Sahi):
+# Deploy to all 3 consumer VMs (Yuva, Pavan, Sahi):
 .\deploy\manual_deploy.ps1
 
-# Deploy to an individual VM:
+# Deploy to a specific VM:
 .\deploy\manual_deploy.ps1 -Target yuva
 .\deploy\manual_deploy.ps1 -Target pavan
 .\deploy\manual_deploy.ps1 -Target sahi
 
-# Deploy passing VM host directly:
+# Override host IP directly:
 .\deploy\manual_deploy.ps1 -Target pavan -VmHost "34.xx.xx.xx"
 ```
 
@@ -131,7 +153,10 @@ cd consumer
 ```bash
 cd consumer
 
+# Deploy to all VMs
 ./deploy/manual_deploy.sh all
+
+# Deploy to an individual VM
 ./deploy/manual_deploy.sh yuva
 ./deploy/manual_deploy.sh pavan
 ./deploy/manual_deploy.sh sahi
@@ -139,26 +164,33 @@ cd consumer
 
 ---
 
-## Service Management & Monitoring
+## Service Management & Troubleshooting
 
-Run these commands on any consumer VM:
-
+### Daily Operations on Consumer VM
 ```bash
-# Check service health
+# Check service status
 sudo systemctl status neo-tel-order-processor
 
-# Stream live real-time trading logs
+# View live streaming trade execution logs
 sudo journalctl -u neo-tel-order-processor -f
 
 # View logs from today only
 sudo journalctl -u neo-tel-order-processor --since today
 
-# Restart consumer manually
+# Restart service manually
 sudo systemctl restart neo-tel-order-processor
 ```
 
-### Checking Active Consumer Groups on OCI Kafka
-Run directly on your **OCI Kafka VM** to monitor all consumer VMs:
+### Common Kotak API Rejections & Fixes
+
+| Error Code / Message | Cause | Resolution |
+| :--- | :--- | :--- |
+| `401 Unauthorized` (`stCode: 100008`) | Missing/invalid MPIN, expired session, or incorrect UCC credentials. | Verify `KOTAK_MPIN`, `KOTAK_TOTP_KEY`, and `KOTAK_UCC` in `.env`. Ensure F&O trading is activated on the broker account. |
+| `403 Forbidden` (`stCode: 1041: LTP not available`) | A Market order was sent when the market is closed or contract has no live ticks. | Normal behavior during off-market testing or deep OTM test strikes. Works automatically during live market hours. |
+| `UnknownMemberIdError / CommitFailedError` | The asyncio event loop was blocked longer than `session_timeout_ms`. | Solved in `v2.1+`: all API calls are offloaded to worker threads via `asyncio.to_thread` with a 30s session timeout. |
+
+### Inspecting Consumer Groups on Remote Kafka
+Run this on your Kafka host (e.g. OCI VM) to verify all 3 consumers are connected and active:
 ```bash
 docker exec trading-kafka /opt/kafka/bin/kafka-consumer-groups.sh \
   --bootstrap-server localhost:9092 \
@@ -175,4 +207,4 @@ docker exec trading-kafka /opt/kafka/bin/kafka-consumer-groups.sh \
   --describe \
   --group kotak_executor_sahi
 ```
-All connected groups should display `LAG = 0` and active client assignments.
+Each consumer group will display `LAG = 0` with active partition assignments.
