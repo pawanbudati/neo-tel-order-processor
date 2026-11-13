@@ -43,6 +43,11 @@ class FakeKotakClient:
     def modify_order(self, order_id, price, order_type, quantity, trigger_price=0.0, validity="DAY"):
         if order_id not in self.orders:
             return {"success": False, "error": "Unknown order"}
+        placement = self.orders[order_id]["placement"]
+        placement.price = price
+        placement.order_type = order_type
+        placement.quantity = quantity
+        placement.trigger_price = trigger_price
         return {"success": True, "order_id": order_id}
 
     def cancel_order(self, order_id):

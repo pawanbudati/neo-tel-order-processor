@@ -42,13 +42,15 @@ flowchart TD
 - Fetches and caches the official Kotak Neo scrip master.
 - Features resilient regex-based date matching (`ddMMMyyyy`) for weekly and monthly expiries, with automatic fallback search across active trading symbols.
 
-### 2. Multi-Target Staged Exits & Trailing Stop-Loss
-- **Lot Sizing**: Defaults to multiples of 3 lots (e.g., 3, 6, 9 lots) or risk-based sizing.
-- **Protective Stop-Loss**: Immediately places a protective sell stop-limit order upon entry order fill.
-- **Dynamic Trailing Milestones**:
-  - **Target 1 reached**: Executes a partial exit of 1/3 quantity; trails protective stop on remaining 2/3 lots to the average entry price (cost-to-cost / risk-free).
-  - **Target 2 reached**: Executes a partial exit of 1/3 quantity; trails protective stop to Target 1.
-  - **Target 3 reached**: Squares off the remaining position.
+### 2. Dynamic Trailing Stop-Loss Engine
+- **Protective Stop-Loss**: Immediately places a protective sell stop-limit order on Kotak Neo upon entry order fill.
+- **Dynamic Trailing Milestones** (Full position rides the trend):
+  - **Initial**: Protective stop is set at the signal's specified stop loss.
+  - **Target 1 reached**: Trails protective stop to **Buy Price (entry average / cost-to-cost)**.
+  - **Target 2 reached**: Trails protective stop to **Target 1**.
+  - **Target 3 reached**: Trails protective stop to **Target 2**.
+  - **Beyond Target 3**: Calculates point difference (`step = T3 - T2`). As the market price advances by each `step`, the stop loss is automatically trailed upwards by `step` points above the previous stop.
+  - **Upward Ratchet**: Stop loss only ever moves higher; pullbacks never decrease the stop. Position exits only when the trailed stop loss order is hit on the exchange or an explicit exit instruction is received.
 
 ### 3. Immediate Market Exit on Any Exit Signal
 When an exit or cancellation instruction arrives (*"Exit at cost to cost"*, *"Exit @253"*, *"close position"*, *"square off"*, or *"exit"*):

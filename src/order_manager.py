@@ -389,14 +389,6 @@ class OrderManager:
                 lot_size = sym_info["lot_size"] if sym_info else 65
                 instrument_token = str(sym_info.get("instrument_token", "")) if sym_info else ""
 
-                lots_to_trade = max(1, filled_qty // lot_size)
-                target_count = min(len(signal.targets), lots_to_trade)
-                if target_count:
-                    lots_each, extra = divmod(lots_to_trade, target_count)
-                    target_quantities = [(lots_each + (1 if i < extra else 0)) * lot_size for i in range(target_count)]
-                else:
-                    target_quantities = []
-
                 trade = {
                     "contract_key": contract_key,
                     "entry_order_id": target_order.order_id,
@@ -409,9 +401,7 @@ class OrderManager:
                     "entry_average": avg_price,
                     "entry_reference": float(signal.entry_price or target_order.trigger_price or avg_price),
                     "stop_loss": float(signal.stop_loss),
-                    "targets": [float(x) for x in signal.targets[:target_count]],
-                    "target_quantities": target_quantities,
-                    "target_index": 0,
+                    "targets": sorted([float(x) for x in signal.targets]) if signal.targets else [],
                     "open_quantity": filled_qty,
                     "stop_order_id": None,
                     "stop_filled": 0,
@@ -477,12 +467,6 @@ class OrderManager:
                 logger.warning(f"Could not resolve scrip details while registering stop loss: {e}")
             lot_size = sym_info["lot_size"] if sym_info else 65
             instrument_token = str(sym_info.get("instrument_token", "")) if sym_info else ""
-            target_count = min(len(signal.targets), max(1, target_order.quantity // lot_size))
-            if target_count:
-                lots_each, extra = divmod(max(1, target_order.quantity // lot_size), target_count)
-                target_quantities = [(lots_each + (1 if i < extra else 0)) * lot_size for i in range(target_count)]
-            else:
-                target_quantities = []
             self.managed_trades[contract_key] = {
                 "contract_key": contract_key,
                 "entry_order_id": target_order.order_id,
@@ -495,9 +479,7 @@ class OrderManager:
                 "entry_average": 0.0,
                 "entry_reference": float(signal.entry_price or signal.trigger_price or target_order.trigger_price or 0.0),
                 "stop_loss": float(signal.stop_loss),
-                "targets": [float(x) for x in signal.targets[:target_count]],
-                "target_quantities": target_quantities,
-                "target_index": 0,
+                "targets": sorted([float(x) for x in signal.targets]) if signal.targets else [],
                 "open_quantity": 0,
                 "stop_order_id": None,
                 "stop_filled": 0,
@@ -619,7 +601,6 @@ class OrderManager:
             }
         lots_to_trade = quantity // lot_size
         if signal.targets:
-            signal.targets = signal.targets[:lots_to_trade]
             signal.target = signal.targets[0] if signal.targets else None
 
         # Generate unique tag to satisfy Kotak Neo OMS unique Client Order ID constraint
@@ -659,12 +640,6 @@ class OrderManager:
             self.pending_orders_by_contract[signal.contract_key()] = active_order
             self.orders_by_id[order_id] = active_order
             if signal.stop_loss and transaction_type in ("BUY", "B"):
-                target_count = min(len(signal.targets), quantity // lot_size)
-                if target_count:
-                    lots_each, extra = divmod(quantity // lot_size, target_count)
-                    target_quantities = [(lots_each + (1 if i < extra else 0)) * lot_size for i in range(target_count)]
-                else:
-                    target_quantities = []
                 self.managed_trades[signal.contract_key()] = {
                     "contract_key": signal.contract_key(),
                     "entry_order_id": order_id,
@@ -677,9 +652,7 @@ class OrderManager:
                     "entry_average": 0.0,
                     "entry_reference": float(signal.entry_price or signal.trigger_price or 0.0),
                     "stop_loss": float(signal.stop_loss),
-                    "targets": [float(x) for x in signal.targets[:target_count]],
-                    "target_quantities": target_quantities,
-                    "target_index": 0,
+                    "targets": sorted([float(x) for x in signal.targets]) if signal.targets else [],
                     "open_quantity": 0,
                     "stop_order_id": None,
                     "stop_filled": 0,
@@ -852,14 +825,15 @@ class OrderManager:
                     if delta:
                         trade["open_quantity"] = max(0, int(trade["open_quantity"]) - delta)
                         trade["pending_exit_filled"] = filled
-                        pending_target = int(trade["pending_exit_target"] or 0)
-                        trade["target_quantities"][pending_target] = max(
-                            0, int(trade["target_quantities"][pending_target]) - delta
-                        )
+                        pending_target = int(trade.get("pending_exit_target") or 0)
+                        t_quants = trade.get("target_quantities") or []
+                        if pending_target < len(t_quants):
+                            t_quants[pending_target] = max(0, int(t_quants[pending_target]) - delta)
                         dirty = True
                     if exit_order["status"] in (OrderStatus.COMPLETE, OrderStatus.CANCELLED, OrderStatus.REJECTED):
-                        target_idx = int(trade["pending_exit_target"] or 0)
-                        if int(trade["target_quantities"][target_idx]) == 0:
+                        target_idx = int(trade.get("pending_exit_target") or 0)
+                        t_quants = trade.get("target_quantities") or []
+                        if target_idx < len(t_quants) and int(t_quants[target_idx]) == 0:
                             trade["target_index"] = target_idx + 1
                         # Reconcile stop quantity with the true position after any partial fill.
                         if trade["open_quantity"] > 0:
@@ -872,61 +846,105 @@ class OrderManager:
                         dirty = True
                     continue
 
-                target_idx = int(trade["target_index"])
-                if target_idx >= len(trade["targets"]):
-                    continue
-                ltp = self.kotak.get_ltp(trade["instrument_token"], trade["exchange_segment"])
-                target_price = float(trade["targets"][target_idx])
-                if ltp < target_price:
-                    continue
+                # Trailing Stop Loss Management (position rides the trend without premature target closure)
+                if trade["open_quantity"] > 0:
+                    ltp = self.kotak.get_ltp(trade["instrument_token"], trade["exchange_segment"])
+                    if ltp and ltp > 0:
+                        buy_price = float(trade.get("entry_average") or trade.get("entry_reference") or 0.0)
+                        initial_sl = float(trade.get("stop_loss") or trade.get("stop_price") or 0.0)
+                        current_sl = float(trade.get("stop_price") or initial_sl)
+                        targets = [float(x) for x in trade.get("targets", [])]
 
-                exit_quantity = min(int(trade["target_quantities"][target_idx]), int(trade["open_quantity"]))
-                remaining_after_exit = int(trade["open_quantity"]) - exit_quantity
-                target_stop = (
-                    float(trade["entry_average"] or trade["entry_reference"])
-                    if target_idx == 0
-                    else float(trade["targets"][target_idx - 1])
-                )
-                if remaining_after_exit > 0:
-                    if not self._modify_protective_stop(trade, remaining_after_exit, target_stop):
-                        continue
-                    dirty = True
-                else:
-                    if trade.get("stop_order_id"):
-                        cancel_resp = self.kotak.cancel_order(trade["stop_order_id"])
-                        if not cancel_resp.get("success"):
-                            curr_st = self.kotak.get_order_status(trade["stop_order_id"])
-                            if curr_st not in (OrderStatus.CANCELLED, OrderStatus.COMPLETE):
-                                logger.error(f"Cannot cancel stop before final target exit for {key}; skipping exit")
-                                continue
-                        trade["stop_order_id"] = None
+                        if ltp > float(trade.get("highest_price", 0.0)):
+                            trade["highest_price"] = float(ltp)
+                            dirty = True
 
-                exit_response = self.kotak.place_order(OrderPlacement(
-                    trading_symbol=trade["trading_symbol"],
-                    exchange_segment=trade["exchange_segment"],
-                    transaction_type="SELL",
-                    order_type="MKT",
-                    quantity=exit_quantity,
-                    price=0.0,
-                    product=trade["product"],
-                    tag=f"TX{uuid.uuid4().hex[:8].upper()}",
-                    contract_key=key,
-                ))
-                if not exit_response.get("success"):
-                    # Restore the stop quantity if the target exit was rejected.
-                    self._modify_protective_stop(trade, int(trade["open_quantity"]), float(trade["stop_price"]))
-                    dirty = True
-                    continue
-                trade["pending_exit_id"] = str(exit_response["order_id"])
-                trade["pending_exit_quantity"] = exit_quantity
-                trade["pending_exit_filled"] = 0
-                trade["pending_exit_target"] = target_idx
-                dirty = True
-                logger.info(f"Target {target_idx + 1} touched for {key}; exit order {exit_response['order_id']} for {exit_quantity} units")
+                        new_sl = self.calculate_trailed_stop_price(
+                            buy_price=buy_price,
+                            initial_sl=initial_sl,
+                            current_sl=current_sl,
+                            targets=targets,
+                            ltp=ltp,
+                        )
+
+                        if new_sl > current_sl:
+                            logger.info(
+                                f"[bold green]Trailing SL adjustment for {key}:[/bold green] "
+                                f"LTP={ltp:.2f} | Current SL={current_sl:.2f} -> Trailed SL={new_sl:.2f} | "
+                                f"BuyPrice={buy_price:.2f} | Targets={targets}"
+                            )
+                            if self._modify_protective_stop(trade, int(trade["open_quantity"]), new_sl):
+                                dirty = True
             except Exception as exc:
                 logger.error(f"Trade reconciliation failed for {key}: {exc}", exc_info=True)
         if dirty:
             self._save_managed_trades()
+
+    @staticmethod
+    def calculate_trailed_stop_price(
+        buy_price: float,
+        initial_sl: float,
+        current_sl: float,
+        targets: List[float],
+        ltp: float,
+    ) -> float:
+        """
+        Calculates target trailing stop loss based on trailing rules:
+        1. Initially put SL at given SL value.
+        2. When price reaches T1: move SL to buy price.
+        3. When price reaches T2: move SL to T1.
+        4. When price reaches T3: move SL to T2.
+        5. Beyond T3: calculate diff = T3 - T2. As price moves by diff points above T3,
+           move SL by diff points above the previous SL.
+        6. Ratchet rule: SL only ever moves upward (never decreases).
+        """
+        if not targets or ltp <= 0:
+            return round_tick(max(current_sl, initial_sl))
+
+        sorted_targets = sorted(targets)
+        new_sl = initial_sl
+
+        if len(sorted_targets) >= 3:
+            t1, t2, t3 = sorted_targets[0], sorted_targets[1], sorted_targets[2]
+            if ltp >= t3:
+                diff = t3 - t2
+                if diff > 0:
+                    steps = int((ltp - t3) // diff)
+                    new_sl = t2 + (steps * diff)
+                else:
+                    new_sl = t2
+            elif ltp >= t2:
+                new_sl = t1
+            elif ltp >= t1:
+                new_sl = buy_price
+            else:
+                new_sl = initial_sl
+        elif len(sorted_targets) == 2:
+            t1, t2 = sorted_targets[0], sorted_targets[1]
+            if ltp >= t2:
+                diff = t2 - t1
+                if diff > 0:
+                    steps = int((ltp - t2) // diff)
+                    new_sl = t1 + (steps * diff)
+                else:
+                    new_sl = t1
+            elif ltp >= t1:
+                new_sl = buy_price
+            else:
+                new_sl = initial_sl
+        elif len(sorted_targets) == 1:
+            t1 = sorted_targets[0]
+            if ltp >= t1:
+                diff = t1 - buy_price
+                if diff > 0:
+                    steps = int((ltp - t1) // diff)
+                    new_sl = buy_price + (steps * diff)
+                else:
+                    new_sl = buy_price
+            else:
+                new_sl = initial_sl
+
+        return round_tick(max(current_sl, new_sl))
 
     def _calculate_prices(self, signal: ParsedSignal, sym_info: Optional[Dict[str, Any]] = None):
         """

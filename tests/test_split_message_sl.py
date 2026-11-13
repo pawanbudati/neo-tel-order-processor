@@ -149,11 +149,20 @@ def test_split_message_sl_when_entry_still_pending():
 
 def test_target_price_execution_and_trailing_stop():
     """
-    Verifies that target execution and stop trailing work properly:
-    1. Trade is active with 3 lots (195 qty) at entry 27.0, SL 15.0, Targets [35.0, 45.0, 55.0].
+    Verifies the trailing stop logic across all milestones:
+    1. Trade is active with 3 lots (195 qty) at entry 27.25, SL 15.0, Targets [35.0, 45.0, 55.0].
     2. When LTP reaches Target 1 (35.0):
-       - Target 1 quantity (65) is exited via Market SELL.
-       - Stop loss on remaining 130 qty is trailed to breakeven (27.0).
+       - Position does NOT close. Full 195 qty remains open.
+       - Stop loss is trailed to Buy Price (27.25).
+    3. When LTP reaches Target 2 (45.0):
+       - Stop loss is trailed to Target 1 (35.0).
+    4. When LTP reaches Target 3 (55.0):
+       - Stop loss is trailed to Target 2 (45.0).
+    5. Beyond Target 3 (diff = 55 - 45 = 10):
+       - When price reaches 65.0 (55 + 10): SL trails to 55.0 (45 + 10).
+       - When price reaches 75.0 (55 + 20): SL trails to 65.0 (45 + 20).
+    6. When price drops back to 68.0:
+       - SL stays at 65.0 (ratchet: never moves down).
     """
     client = FakeKotakClient()
     mgr = OrderManager(kotak_client=client, default_lots=3, risk_percentage=None, account_id="test_target_exec")
@@ -184,21 +193,141 @@ def test_target_price_execution_and_trailing_stop():
     initial_stop_id = trade["stop_order_id"]
     assert initial_stop_id is not None
     assert trade["stop_price"] == 15.0
+    assert trade["open_quantity"] == 195
 
-    # Simulate price rising to Target 1 (35.0)
+    # 1. Price reaches Target 1 (35.0) -> SL moves to Buy Price (entry_average 27.25)
     client.get_ltp = lambda token, seg: 35.5
-
-    # Run reconciliation
     mgr.manage_open_trades()
+    assert trade.get("pending_exit_id") is None  # Does NOT exit
+    assert trade["open_quantity"] == 195         # Full position kept
+    assert trade["stop_price"] == trade["entry_average"]  # Trailed to buy price
+    assert client.orders[initial_stop_id]["placement"].trigger_price == trade["entry_average"]
 
-    # Target 1 exit order should have been placed!
-    pending_exit_id = trade.get("pending_exit_id")
-    assert pending_exit_id is not None
-    exit_order = client.orders[pending_exit_id]["placement"]
-    assert exit_order.transaction_type == "SELL"
-    assert exit_order.order_type == "MKT"
-    assert exit_order.quantity == 65  # 1 lot exited
+    # 2. Price reaches Target 2 (45.0) -> SL moves to Target 1 (35.0)
+    client.get_ltp = lambda token, seg: 45.5
+    mgr.manage_open_trades()
+    assert trade["stop_price"] == 35.0
+    assert client.orders[initial_stop_id]["placement"].trigger_price == 35.0
 
-    # Protective stop should have trailed to breakeven (fill price 27.25)
+    # 3. Price reaches Target 3 (55.0) -> SL moves to Target 2 (45.0)
+    client.get_ltp = lambda token, seg: 55.5
+    mgr.manage_open_trades()
+    assert trade["stop_price"] == 45.0
+    assert client.orders[initial_stop_id]["placement"].trigger_price == 45.0
+
+    # 4. Price advances beyond T3 by 10 points (step = 55 - 45 = 10) -> reaches 65.0
+    client.get_ltp = lambda token, seg: 65.0
+    mgr.manage_open_trades()
+    assert trade["stop_price"] == 55.0
+    assert client.orders[initial_stop_id]["placement"].trigger_price == 55.0
+
+    # 5. Price advances another 10 points -> reaches 75.0
+    client.get_ltp = lambda token, seg: 75.0
+    mgr.manage_open_trades()
+    assert trade["stop_price"] == 65.0
+    assert client.orders[initial_stop_id]["placement"].trigger_price == 65.0
+
+    # 6. Price retraces from 75.0 to 68.0 -> SL must NOT decrease
+    client.get_ltp = lambda token, seg: 68.0
+    mgr.manage_open_trades()
+    assert trade["stop_price"] == 65.0
+
+    # 7. Price hits SL (65.0) -> SL fills and position is closed
+    client.orders[initial_stop_id]["filled_quantity"] = 195
+    client.orders[initial_stop_id]["status"] = OrderStatus.COMPLETE
+    mgr.manage_open_trades()
+    assert "NIFTY_23700_CE" not in mgr.managed_trades
+
+
+def test_trailing_stop_with_single_lot():
+    """
+    Ensures that 1-lot trades also trail dynamically and do NOT close prematurely at T1.
+    """
+    client = FakeKotakClient()
+    mgr = OrderManager(kotak_client=client, default_lots=1, risk_percentage=None, account_id="test_single_lot")
+    mgr.managed_trades = {}
+
+    sig = ParsedSignal(
+        is_trading_signal=True,
+        signal_type=SignalType.NEW_ORDER,
+        action="BUY",
+        index="NIFTY",
+        strike_price=24500,
+        option_type="CE",
+        order_condition=OrderCondition.ABOVE,
+        entry_price=100.0,
+        trigger_price=100.0,
+        stop_loss=80.0,
+        targets=[120.0, 140.0, 170.0],
+        raw_message="NIFTY 24500 CE ABV 100 TGT 120/140/170 SL 80"
+    )
+
+    res = mgr.process_signal(sig)
+    entry_id = res["order_id"]
+    client.orders[entry_id]["status"] = OrderStatus.COMPLETE
+
+    mgr.manage_open_trades()
+    trade = mgr.managed_trades["NIFTY_24500_CE"]
+    stop_id = trade["stop_order_id"]
+    assert trade["open_quantity"] == 65  # 1 lot
+    assert trade["targets"] == [120.0, 140.0, 170.0]  # All targets preserved
+
+    # T1 reached -> SL moves to Buy Price (entry_average = 101.0 with 1% buffer)
+    client.get_ltp = lambda token, seg: 125.0
+    mgr.manage_open_trades()
+    assert trade["open_quantity"] == 65  # NOT closed!
     assert trade["stop_price"] == trade["entry_average"]
+
+    # T2 reached -> SL moves to T1 (120.0)
+    client.get_ltp = lambda token, seg: 145.0
+    mgr.manage_open_trades()
+    assert trade["open_quantity"] == 65
+    assert trade["stop_price"] == 120.0
+
+    # T3 reached -> SL moves to T2 (140.0)
+    client.get_ltp = lambda token, seg: 172.0
+    mgr.manage_open_trades()
+    assert trade["open_quantity"] == 65
+    assert trade["stop_price"] == 140.0
+
+    # Beyond T3 by (170 - 140 = 30 points) -> LTP reaches 200.0 -> SL moves to 170.0
+    client.get_ltp = lambda token, seg: 202.0
+    mgr.manage_open_trades()
+    assert trade["stop_price"] == 170.0
+
+
+def test_calculate_trailed_stop_price_unit():
+    calc = OrderManager.calculate_trailed_stop_price
+
+    buy = 100.0
+    sl = 80.0
+    tgts = [120.0, 140.0, 170.0]  # step = 30
+
+    # Price before T1
+    assert calc(buy, sl, sl, tgts, 110.0) == 80.0
+
+    # Price at T1
+    assert calc(buy, sl, sl, tgts, 120.0) == 100.0
+
+    # Price between T1 and T2
+    assert calc(buy, sl, 100.0, tgts, 135.0) == 100.0
+
+    # Price at T2
+    assert calc(buy, sl, 100.0, tgts, 140.0) == 120.0
+
+    # Price at T3
+    assert calc(buy, sl, 120.0, tgts, 170.0) == 140.0
+
+    # Price between T3 and T3 + step (170 + 30 = 200)
+    assert calc(buy, sl, 140.0, tgts, 195.0) == 140.0
+
+    # Price at T3 + step (200)
+    assert calc(buy, sl, 140.0, tgts, 200.0) == 170.0
+
+    # Price at T3 + 2*step (230)
+    assert calc(buy, sl, 170.0, tgts, 230.0) == 200.0
+
+    # Price pulls back from 235 to 210 -> Ratchet retains highest SL
+    assert calc(buy, sl, 200.0, tgts, 210.0) == 200.0
+
 
