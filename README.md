@@ -21,12 +21,14 @@ flowchart TD
         PB -->|Sub: kotak_executor_yuva| VM1[Yuva Consumer VM\nAccount: yuva]
         PB -->|Sub: kotak_executor_pavan| VM2[Pavan Consumer VM\nAccount: pavan]
         PB -->|Sub: kotak_executor_sahi| VM3[Sahi Consumer VM\nAccount: sahi]
+        PB -->|Sub: kotak_executor_hari| VM4[Hari Consumer VM\nAccount: hari]
     end
 
     subgraph Execution Layer
         VM1 -->|REST & WebSockets| KN1[Kotak Neo API - Account 1]
         VM2 -->|REST & WebSockets| KN2[Kotak Neo API - Account 2]
         VM3 -->|REST & WebSockets| KN3[Kotak Neo API - Account 3]
+        VM4 -->|REST & WebSockets| KN4[Kotak Neo API - Account 4]
     end
 ```
 

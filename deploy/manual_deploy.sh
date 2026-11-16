@@ -129,6 +129,13 @@ SAHI_KEY="${GCP_VM_SSH_KEY_SAHI:-${SSH_KEY_PATH_SAHI:-$DEFAULT_KEY}}"
 SAHI_PORT="${GCP_VM_SSH_PORT_SAHI:-${VM_PORT_SAHI:-$DEFAULT_PORT}}"
 SAHI_PATH="${CONSUMER_DEPLOY_PATH_SAHI:-${DEPLOY_PATH_SAHI:-$DEFAULT_PATH}}"
 
+# Resolve Hari VM configuration
+HARI_HOST="${GCP_VM_HOST_HARI:-${VM_HOST_HARI:-}}"
+HARI_USER="${GCP_VM_USER_HARI:-${VM_USER_HARI:-$DEFAULT_USER}}"
+HARI_KEY="${GCP_VM_SSH_KEY_HARI:-${SSH_KEY_PATH_HARI:-$DEFAULT_KEY}}"
+HARI_PORT="${GCP_VM_SSH_PORT_HARI:-${VM_PORT_HARI:-$DEFAULT_PORT}}"
+HARI_PATH="${CONSUMER_DEPLOY_PATH_HARI:-${DEPLOY_PATH_HARI:-$DEFAULT_PATH}}"
+
 case "$TARGET" in
   yuva)
     deploy_to_target "Yuva VM" "$YUVA_HOST" "$YUVA_USER" "$YUVA_KEY" "$YUVA_PORT" "$YUVA_PATH"
@@ -138,6 +145,9 @@ case "$TARGET" in
     ;;
   sahi)
     deploy_to_target "Sahi VM" "$SAHI_HOST" "$SAHI_USER" "$SAHI_KEY" "$SAHI_PORT" "$SAHI_PATH"
+    ;;
+  hari)
+    deploy_to_target "Hari VM" "$HARI_HOST" "$HARI_USER" "$HARI_KEY" "$HARI_PORT" "$HARI_PATH"
     ;;
   all)
     count=0
@@ -153,13 +163,17 @@ case "$TARGET" in
       deploy_to_target "Sahi VM" "$SAHI_HOST" "$SAHI_USER" "$SAHI_KEY" "$SAHI_PORT" "$SAHI_PATH"
       ((count++))
     fi
+    if [[ -n "$HARI_HOST" ]]; then
+      deploy_to_target "Hari VM" "$HARI_HOST" "$HARI_USER" "$HARI_KEY" "$HARI_PORT" "$HARI_PATH"
+      ((count++))
+    fi
     if [[ $count -eq 0 ]]; then
-      echo "Error: No consumer VM hosts configured (set GCP_VM_HOST_YUVA, GCP_VM_HOST_PAVAN, or GCP_VM_HOST_SAHI)." >&2
+      echo "Error: No consumer VM hosts configured (set GCP_VM_HOST_YUVA, GCP_VM_HOST_PAVAN, GCP_VM_HOST_SAHI, or GCP_VM_HOST_HARI)." >&2
       exit 1
     fi
     ;;
   *)
-    echo "Unknown target '$TARGET'. Use: yuva, pavan, sahi, or all." >&2
+    echo "Unknown target '$TARGET'. Use: yuva, pavan, sahi, hari, or all." >&2
     exit 1
     ;;
 esac

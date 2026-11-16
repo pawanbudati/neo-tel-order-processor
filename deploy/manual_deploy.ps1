@@ -19,7 +19,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('yuva', 'pavan', 'sahi', 'all')]
+    [ValidateSet('yuva', 'pavan', 'sahi', 'hari', 'all')]
     [string]$Target = 'all',
 
     [string]$VmHost = $null,
@@ -177,6 +177,13 @@ $sahiKey  = if ($env:GCP_VM_SSH_KEY_SAHI) { $env:GCP_VM_SSH_KEY_SAHI } else { $d
 $sahiPort = if ($env:GCP_VM_SSH_PORT_SAHI) { [int]$env:GCP_VM_SSH_PORT_SAHI } else { $defaultPort }
 $sahiPath = if ($env:CONSUMER_DEPLOY_PATH_SAHI) { $env:CONSUMER_DEPLOY_PATH_SAHI } else { $defaultPath }
 
+# Hari VM
+$hariHost = if ($env:GCP_VM_HOST_HARI) { $env:GCP_VM_HOST_HARI } else { $env:VM_HOST_HARI }
+$hariUser = if ($env:GCP_VM_USER_HARI) { $env:GCP_VM_USER_HARI } else { $defaultUser }
+$hariKey  = if ($env:GCP_VM_SSH_KEY_HARI) { $env:GCP_VM_SSH_KEY_HARI } else { $defaultKey }
+$hariPort = if ($env:GCP_VM_SSH_PORT_HARI) { [int]$env:GCP_VM_SSH_PORT_HARI } else { $defaultPort }
+$hariPath = if ($env:CONSUMER_DEPLOY_PATH_HARI) { $env:CONSUMER_DEPLOY_PATH_HARI } else { $defaultPath }
+
 switch ($Target) {
     'yuva' {
         Invoke-DeployTarget "Yuva VM" $yuvaHost $yuvaUser $yuvaKey $yuvaPort $yuvaPath
@@ -187,9 +194,13 @@ switch ($Target) {
     'sahi' {
         Invoke-DeployTarget "Sahi VM" $sahiHost $sahiUser $sahiKey $sahiPort $sahiPath
     }
+    'hari' {
+        Invoke-DeployTarget "Hari VM" $hariHost $hariUser $hariKey $hariPort $hariPath
+    }
     'all' {
         if ($yuvaHost)    { Invoke-DeployTarget "Yuva VM" $yuvaHost $yuvaUser $yuvaKey $yuvaPort $yuvaPath }
         if ($pavanHost)   { Invoke-DeployTarget "Pavan VM" $pavanHost $pavanUser $pavanKey $pavanPort $pavanPath }
         if ($sahiHost)    { Invoke-DeployTarget "Sahi VM" $sahiHost $sahiUser $sahiKey $sahiPort $sahiPath }
+        if ($hariHost)    { Invoke-DeployTarget "Hari VM" $hariHost $hariUser $hariKey $hariPort $hariPath }
     }
 }

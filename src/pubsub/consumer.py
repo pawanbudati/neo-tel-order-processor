@@ -49,8 +49,8 @@ class PubSubSignalConsumer:
         self._capital = capital
         self.on_signal_callback = on_signal_callback
 
-        self.project_id = project_id or settings.gcp_project_id
-        self.topic_id = topic or settings.pubsub_topic_signals
+        self.project_id = project_id if project_id is not None else settings.gcp_project_id
+        self.topic_id = topic if topic is not None else settings.pubsub_topic_signals
 
         # Distinct subscription per account ensures replication/fanout across multiple accounts
         if subscription_id:
