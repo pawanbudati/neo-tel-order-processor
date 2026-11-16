@@ -61,6 +61,7 @@ jobs:
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_YUVA || vars.GCP_VM_SSH_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH_YUVA || vars.CONSUMER_DEPLOY_PATH || '/home/' }}
           LOG_CLEANUP_CRON: ${{ secrets.LOG_CLEANUP_CRON_YUVA || vars.LOG_CLEANUP_CRON_YUVA || secrets.LOG_CLEANUP_CRON || vars.LOG_CLEANUP_CRON || '0 8 * * *' }}
+          GCP_PUBSUB_KEY: ${{ secrets.GCP_PUBSUB_KEY_YUVA || secrets.GCP_PUBSUB_KEY }}
         run: |
           TARGET="${VM_IP:-$VM_HOST}"
           if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
@@ -75,6 +76,12 @@ jobs:
             --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
             ./ "$VM_USER@$TARGET:$DEPLOY_PATH/"
+          if [ -n "$GCP_PUBSUB_KEY" ]; then
+            echo "Deploying GCP Pub/Sub service account key to $TARGET:$DEPLOY_PATH/gcp-pubsub-key.json..."
+            printf '%s\n' "$GCP_PUBSUB_KEY" | ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
+              "cat > '$DEPLOY_PATH/gcp-pubsub-key.json' && chmod 600 '$DEPLOY_PATH/gcp-pubsub-key.json'"
+            echo "Key successfully provisioned."
+          fi
           ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
             "DEPLOY_PATH='$DEPLOY_PATH' LOG_CLEANUP_CRON='$LOG_CLEANUP_CRON' bash '$DEPLOY_PATH/deploy/deploy.sh'"
 
@@ -122,6 +129,7 @@ jobs:
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_PAVAN || vars.GCP_VM_SSH_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH_PAVAN || vars.CONSUMER_DEPLOY_PATH || '/home/' }}
           LOG_CLEANUP_CRON: ${{ secrets.LOG_CLEANUP_CRON_PAVAN || vars.LOG_CLEANUP_CRON_PAVAN || secrets.LOG_CLEANUP_CRON || vars.LOG_CLEANUP_CRON || '0 8 * * *' }}
+          GCP_PUBSUB_KEY: ${{ secrets.GCP_PUBSUB_KEY_PAVAN || secrets.GCP_PUBSUB_KEY }}
         run: |
           TARGET="${VM_IP:-$VM_HOST}"
           if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
@@ -136,6 +144,12 @@ jobs:
             --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
             ./ "$VM_USER@$TARGET:$DEPLOY_PATH/"
+          if [ -n "$GCP_PUBSUB_KEY" ]; then
+            echo "Deploying GCP Pub/Sub service account key to $TARGET:$DEPLOY_PATH/gcp-pubsub-key.json..."
+            printf '%s\n' "$GCP_PUBSUB_KEY" | ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
+              "cat > '$DEPLOY_PATH/gcp-pubsub-key.json' && chmod 600 '$DEPLOY_PATH/gcp-pubsub-key.json'"
+            echo "Key successfully provisioned."
+          fi
           ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
             "DEPLOY_PATH='$DEPLOY_PATH' LOG_CLEANUP_CRON='$LOG_CLEANUP_CRON' bash '$DEPLOY_PATH/deploy/deploy.sh'"
 
@@ -183,6 +197,7 @@ jobs:
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_SAHI || vars.GCP_VM_SSH_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH_SAHI || vars.CONSUMER_DEPLOY_PATH || '/home/' }}
           LOG_CLEANUP_CRON: ${{ secrets.LOG_CLEANUP_CRON_SAHI || vars.LOG_CLEANUP_CRON_SAHI || secrets.LOG_CLEANUP_CRON || vars.LOG_CLEANUP_CRON || '0 8 * * *' }}
+          GCP_PUBSUB_KEY: ${{ secrets.GCP_PUBSUB_KEY_SAHI || secrets.GCP_PUBSUB_KEY }}
         run: |
           TARGET="${VM_IP:-$VM_HOST}"
           if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
@@ -197,6 +212,12 @@ jobs:
             --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
             ./ "$VM_USER@$TARGET:$DEPLOY_PATH/"
+          if [ -n "$GCP_PUBSUB_KEY" ]; then
+            echo "Deploying GCP Pub/Sub service account key to $TARGET:$DEPLOY_PATH/gcp-pubsub-key.json..."
+            printf '%s\n' "$GCP_PUBSUB_KEY" | ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
+              "cat > '$DEPLOY_PATH/gcp-pubsub-key.json' && chmod 600 '$DEPLOY_PATH/gcp-pubsub-key.json'"
+            echo "Key successfully provisioned."
+          fi
           ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
             "DEPLOY_PATH='$DEPLOY_PATH' LOG_CLEANUP_CRON='$LOG_CLEANUP_CRON' bash '$DEPLOY_PATH/deploy/deploy.sh'"
 
@@ -244,6 +265,7 @@ jobs:
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_HARI || vars.GCP_VM_SSH_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH_HARI || vars.CONSUMER_DEPLOY_PATH || '/home/' }}
           LOG_CLEANUP_CRON: ${{ secrets.LOG_CLEANUP_CRON_HARI || vars.LOG_CLEANUP_CRON_HARI || secrets.LOG_CLEANUP_CRON || vars.LOG_CLEANUP_CRON || '0 8 * * *' }}
+          GCP_PUBSUB_KEY: ${{ secrets.GCP_PUBSUB_KEY_HARI || secrets.GCP_PUBSUB_KEY }}
         run: |
           TARGET="${VM_IP:-$VM_HOST}"
           if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
@@ -258,5 +280,11 @@ jobs:
             --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
             ./ "$VM_USER@$TARGET:$DEPLOY_PATH/"
+          if [ -n "$GCP_PUBSUB_KEY" ]; then
+            echo "Deploying GCP Pub/Sub service account key to $TARGET:$DEPLOY_PATH/gcp-pubsub-key.json..."
+            printf '%s\n' "$GCP_PUBSUB_KEY" | ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
+              "cat > '$DEPLOY_PATH/gcp-pubsub-key.json' && chmod 600 '$DEPLOY_PATH/gcp-pubsub-key.json'"
+            echo "Key successfully provisioned."
+          fi
           ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
             "DEPLOY_PATH='$DEPLOY_PATH' LOG_CLEANUP_CRON='$LOG_CLEANUP_CRON' bash '$DEPLOY_PATH/deploy/deploy.sh'"

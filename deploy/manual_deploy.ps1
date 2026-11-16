@@ -143,7 +143,15 @@ function Invoke-DeployTarget {
         throw "File sync to $HostName failed."
     }
 
-    # 3. Execute remote deploy.sh
+    # 3. Optional: Upload GCP Pub/Sub key if available locally
+    $localKey = if ($env:GCP_PUBSUB_KEY_PATH) { $env:GCP_PUBSUB_KEY_PATH } else { "$rootDir\gcp-pubsub-key.json" }
+    if (Test-Path $localKey) {
+        Write-Host ">>> Uploading GCP Pub/Sub service account key to ${UserName}@${HostName}:${RemoteDir}/gcp-pubsub-key.json..." -ForegroundColor Yellow
+        & scp $sshArgs "$localKey" "${UserName}@${HostName}:${RemoteDir}/gcp-pubsub-key.json"
+        & ssh $sshArgs "${UserName}@${HostName}" "chmod 600 '$RemoteDir/gcp-pubsub-key.json'"
+    }
+
+    # 4. Execute remote deploy.sh
     Write-Host ">>> Executing remote deploy.sh on $HostName..." -ForegroundColor Yellow
     $cleanupCron = if ($env:LOG_CLEANUP_CRON) { $env:LOG_CLEANUP_CRON } else { "0 8 * * *" }
     & ssh $sshArgs "${UserName}@${HostName}" "DEPLOY_PATH='$RemoteDir' LOG_CLEANUP_CRON='$cleanupCron' bash '$RemoteDir/deploy/deploy.sh'"

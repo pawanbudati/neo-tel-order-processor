@@ -26,7 +26,13 @@ class Settings(BaseModel):
     gcp_project_id: str = Field(default_factory=lambda: os.getenv("GCP_PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "")))
     pubsub_topic_signals: str = Field(default_factory=lambda: os.getenv("PUBSUB_TOPIC_SIGNALS", os.getenv("KAFKA_TOPIC_SIGNALS", "kotak_trading_signals")))
     pubsub_subscription_id: str = Field(default_factory=lambda: os.getenv("PUBSUB_SUBSCRIPTION_ID", os.getenv("KAFKA_CONSUMER_GROUP_ID", "")))
-    pubsub_credentials_path: Optional[str] = Field(default_factory=lambda: os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or os.getenv("GCP_CREDENTIALS_PATH"))
+    pubsub_credentials_path: Optional[str] = Field(
+        default_factory=lambda: (
+            os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            or os.getenv("GCP_CREDENTIALS_PATH")
+            or (str(BASE_DIR / "gcp-pubsub-key.json") if (BASE_DIR / "gcp-pubsub-key.json").exists() else None)
+        )
+    )
     pubsub_emulator_host: Optional[str] = Field(default_factory=lambda: os.getenv("PUBSUB_EMULATOR_HOST"))
 
     # Legacy Kafka settings (kept for backwards compatibility)

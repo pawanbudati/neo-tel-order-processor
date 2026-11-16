@@ -96,7 +96,15 @@ deploy_to_target() {
         -C "$ROOT_DIR" -czf - . | ssh "${ssh_opts[@]}" "$user@$host" "tar -xzf - -C '$remote_path'"
   fi
 
-  # 3. Execute remote deploy.sh
+  # 3. Optional: Upload GCP Pub/Sub key if available locally
+  local pubsub_key="${GCP_PUBSUB_KEY_PATH:-$ROOT_DIR/gcp-pubsub-key.json}"
+  if [[ -f "$pubsub_key" ]]; then
+    echo ">>> Uploading GCP Pub/Sub service account key to $user@$host:$remote_path/gcp-pubsub-key.json..."
+    scp "${ssh_opts[@]}" "$pubsub_key" "$user@$host:$remote_path/gcp-pubsub-key.json"
+    ssh "${ssh_opts[@]}" "$user@$host" "chmod 600 '$remote_path/gcp-pubsub-key.json'"
+  fi
+
+  # 4. Execute remote deploy.sh
   echo ">>> Running remote deploy.sh on $host..."
   local cleanup_cron="${LOG_CLEANUP_CRON:-0 8 * * *}"
   ssh "${ssh_opts[@]}" "$user@$host" \
