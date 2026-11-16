@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+*key*.json
+*-credentials*.json
+gcp-pubsub-key.json
 
 # Virtual environments
 .venv/

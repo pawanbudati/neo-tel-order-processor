@@ -82,7 +82,7 @@ class TelegramNotifier:
         self.send(text)
 
     def notify_startup(self, account_id: str):
-        text = f"🚀 *Kotak Order Processor Started*\nAccount: `{account_id}`\nWaiting for trading signals from Kafka..."
+        text = f"🚀 *Kotak Order Processor Started*\nAccount: `{account_id}`\nWaiting for trading signals from Google Cloud Pub/Sub..."
         self.send(text)
 
 

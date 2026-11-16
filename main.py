@@ -24,13 +24,22 @@ from src.logger import logger
 
 
 async def run(args):
-    from src.kafka.consumer import KafkaSignalConsumer
+    from src.pubsub.consumer import PubSubSignalConsumer
     from src.kotak_client import KotakClient
     from src.order_manager import OrderManager, _UNSET
     from src.notifier import notifier
     account_id = args.account_id
     notifier.notify_startup(account_id)
-    group_id = args.group_id or os.getenv("KAFKA_CONSUMER_GROUP_ID") or f"kotak_executor_{account_id}"
+    subscription_id = (
+        args.subscription_id
+        or args.group_id
+        or os.getenv("PUBSUB_SUBSCRIPTION_ID")
+        or os.getenv("KAFKA_CONSUMER_GROUP_ID")
+        or f"kotak_executor_{account_id}"
+    )
+    topic = args.pubsub_topic or args.kafka_topic or os.getenv("PUBSUB_TOPIC_SIGNALS")
+    project_id = args.project_id or os.getenv("GCP_PROJECT_ID")
+
     manager = OrderManager(
         kotak_client=KotakClient(account_id=account_id),
         account_id=account_id,
@@ -39,12 +48,13 @@ async def run(args):
         risk_percentage=args.risk_percent if args.risk_percent is not None else _UNSET,
         capital=args.capital if args.capital is not None else _UNSET,
     )
-    consumer = KafkaSignalConsumer(
+    consumer = PubSubSignalConsumer(
         order_manager=manager,
         account_id=account_id,
-        group_id=group_id,
-        bootstrap_servers=args.kafka_servers,
-        topic=args.kafka_topic,
+        project_id=project_id,
+        topic=topic,
+        subscription_id=subscription_id,
+        credentials_path=args.credentials_path,
         lots=args.lots,
         risk_percentage=args.risk_percent if args.risk_percent is not None else _UNSET,
         capital=args.capital if args.capital is not None else _UNSET,
@@ -53,12 +63,17 @@ async def run(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Kotak Neo Kafka signal executor")
+    parser = argparse.ArgumentParser(description="Kotak Neo Google Cloud Pub/Sub signal executor")
     parser.add_argument("--account-id", default=os.getenv("ACCOUNT_ID", "default"))
-    parser.add_argument("--group-id", help="Unique group per account to receive every signal")
+    parser.add_argument("--subscription-id", dest="subscription_id", default=None,
+                        help="Unique Pub/Sub subscription ID per account to receive every signal")
+    parser.add_argument("--group-id", dest="group_id", default=None, help="[Deprecated alias] for --subscription-id")
+    parser.add_argument("--project-id", "--gcp-project", dest="project_id", default=None, help="GCP Project ID")
+    parser.add_argument("--pubsub-topic", "--topic", dest="pubsub_topic", default=None, help="GCP Pub/Sub Topic ID")
+    parser.add_argument("--credentials-path", default=None, help="Path to GCP service account JSON key")
+    parser.add_argument("--kafka-servers", default=None, help="[Deprecated] Kafka servers")
+    parser.add_argument("--kafka-topic", default=None, help="[Deprecated] Kafka topic")
     parser.add_argument("--env-file", default=None, help="Path to custom .env file for this account")
-    parser.add_argument("--kafka-servers", default=None)
-    parser.add_argument("--kafka-topic", default=None)
     parser.add_argument("--lots", type=int, default=None)
     parser.add_argument("--product", choices=("MIS", "NRML"), default=None)
     parser.add_argument("--risk-percent", type=float, default=None)

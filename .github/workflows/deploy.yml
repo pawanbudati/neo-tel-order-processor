@@ -62,6 +62,8 @@ jobs:
             --exclude='.env' --include='.env.example' --exclude='.env.*' \
             --exclude='.venv/' --exclude='venv/' \
             --exclude='logs/' --exclude='*.log' \
+            --exclude='runtime/' \
+            --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
             ./ "$VM_USER@$VM_HOST:$DEPLOY_PATH/"
           ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" \
@@ -112,6 +114,8 @@ jobs:
             --exclude='.env' --include='.env.example' --exclude='.env.*' \
             --exclude='.venv/' --exclude='venv/' \
             --exclude='logs/' --exclude='*.log' \
+            --exclude='runtime/' \
+            --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
             ./ "$VM_USER@$VM_HOST:$DEPLOY_PATH/"
           ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" \
@@ -162,6 +166,8 @@ jobs:
             --exclude='.env' --include='.env.example' --exclude='.env.*' \
             --exclude='.venv/' --exclude='venv/' \
             --exclude='logs/' --exclude='*.log' \
+            --exclude='runtime/' \
+            --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
             ./ "$VM_USER@$VM_HOST:$DEPLOY_PATH/"
           ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" \

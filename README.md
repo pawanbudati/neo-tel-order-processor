@@ -1,6 +1,6 @@
 # Kotak Neo Order Consumer
 
-A high-performance, account-level algorithmic trade execution engine for Indian derivatives (NIFTY, BANKNIFTY, SENSEX, FINNIFTY) built on the **Kotak Neo API** and **Apache Kafka**.
+A high-performance, account-level algorithmic trade execution engine for Indian derivatives (NIFTY, BANKNIFTY, SENSEX, FINNIFTY) built on the **Kotak Neo API** and **Google Cloud Pub/Sub** under the **Always Free Tier**.
 
 The consumer subscribes to incoming trading signals published by the Signal Producer, resolves live exchange scrips and active contract expiries, sizes positions, and manages the complete trade lifecycle (entry, staged profit targets, trailing stop-losses, and emergency exits).
 
@@ -14,13 +14,13 @@ The consumer subscribes to incoming trading signals published by the Signal Prod
 ```mermaid
 flowchart TD
     subgraph Signal Pipeline
-        KP[Telegram Signal Producer] -->|Publish Signal| KB[(Apache Kafka Topic\nkotak_trading_signals)]
+        KP[Telegram Signal Producer] -->|Publish Signal| PB[(GCP Pub/Sub Topic\nkotak_trading_signals)]
     end
 
-    subgraph Kafka Consumer Fanout
-        KB -->|Group: kotak_executor_yuva| VM1[Yuva Consumer VM\nAccount: yuva]
-        KB -->|Group: kotak_executor_pavan| VM2[Pavan Consumer VM\nAccount: pavan]
-        KB -->|Group: kotak_executor_sahi| VM3[Sahi Consumer VM\nAccount: sahi]
+    subgraph PubSub Native Fanout
+        PB -->|Sub: kotak_executor_yuva| VM1[Yuva Consumer VM\nAccount: yuva]
+        PB -->|Sub: kotak_executor_pavan| VM2[Pavan Consumer VM\nAccount: pavan]
+        PB -->|Sub: kotak_executor_sahi| VM3[Sahi Consumer VM\nAccount: sahi]
     end
 
     subgraph Execution Layer
@@ -31,8 +31,9 @@ flowchart TD
 ```
 
 ### Multi-Account & Multi-VM Isolation
-- **Independent Consumer Groups**: Every consumer VM runs with its own distinct `KAFKA_CONSUMER_GROUP_ID` (e.g. `kotak_executor_yuva`, `kotak_executor_pavan`, `kotak_executor_sahi`).
-- **Full Signal Duplication**: Kafka automatically fans out every trading signal to all active consumer groups simultaneously. An execution delay, rejection, or insufficient fund error on one account has zero impact on the others.
+- **Independent Subscriptions**: Every consumer VM runs with its own distinct `PUBSUB_SUBSCRIPTION_ID` (e.g. `kotak_executor_yuva`, `kotak_executor_pavan`, `kotak_executor_sahi`).
+- **Full Signal Duplication**: Google Cloud Pub/Sub automatically replicates every trading signal to all active account subscriptions simultaneously. An execution delay, rejection, or insufficient fund error on one account has zero impact on the others.
+- **100% Always Free**: Uses Google Cloud's 10 GB/month free tier with zero broker VM infrastructure to maintain.
 
 ---
 
@@ -60,14 +61,10 @@ When an exit or cancellation instruction arrives (*"Exit at cost to cost"*, *"Ex
   3. Updates trade state to `CLOSED`.
 - If the entry order is still pending/unfilled: cancels the pending limit order cleanly.
 
-### 4. Asyncio Concurrency & Kafka Resilience
+### 4. Asyncio Concurrency & Streaming Pull Resilience
 - **Thread Pool Offloading (`asyncio.to_thread`)**: Kotak API operations (scrip search, order placement, 401 re-authentication) perform synchronous HTTP calls. These run in background worker threads so the main `asyncio` event loop is **never blocked**.
-- **Heartbeat Protection**: Kafka broker heartbeat pings continue ticking on schedule, completely eliminating `UnknownMemberIdError` and `CommitFailedError` during broker API latency.
-- **Tuned Kafka Timeouts**:
-  - `session_timeout_ms = 30000` (30 seconds)
-  - `heartbeat_interval_ms = 5000` (5 seconds)
-  - `max_poll_interval_ms = 300000` (5 minutes)
-- **Defensive Offset Commits**: Offset commit errors are caught gracefully, preventing unhandled service crashes.
+- **Automatic Lease Management**: Google Cloud Pub/Sub automatically extends message acknowledgment deadlines while orders are being placed with Kotak Neo, preventing premature message redelivery.
+- **Graceful Error Handling**: Parsing and unexpected broker execution exceptions are acknowledged safely, preventing poison-pill retry loops.
 
 ---
 
@@ -79,10 +76,11 @@ Each VM maintains its dedicated `.env` configuration file at:
 | Variable | Description | Default / Example |
 | :--- | :--- | :--- |
 | `ACCOUNT_ID` | Identifier for this instance shown in logs | `yuva` / `pavan` / `sahi` |
-| `KAFKA_CONSUMER_GROUP_ID` | Unique Kafka consumer group ID for this account | `kotak_executor_yuva` |
-| `KAFKA_BOOTSTRAP_SERVERS` | Remote Kafka broker host:port | `129.225.75.71:9092` |
-| `KAFKA_TOPIC_SIGNALS` | Kafka topic to consume | `kotak_trading_signals` |
-| `KAFKA_AUTO_OFFSET_RESET` | Starting offset when no commit exists | `latest` |
+| `GCP_PROJECT_ID` | Google Cloud Project ID | `your-gcp-project-id` |
+| `PUBSUB_TOPIC_SIGNALS` | Pub/Sub topic to consume | `kotak_trading_signals` |
+| `PUBSUB_SUBSCRIPTION_ID` | Unique Pub/Sub subscription ID for this account | `kotak_executor_yuva` |
+| `GOOGLE_APPLICATION_CREDENTIALS` | (Optional) Path to GCP service account JSON key | `/path/to/service-account.json` |
+| `PUBSUB_EMULATOR_HOST` | (Optional) Local Pub/Sub emulator host for offline testing | `localhost:8085` |
 | `KOTAK_CONSUMER_KEY` | Kotak Neo API Consumer Key | `<your_consumer_key>` |
 | `KOTAK_CONSUMER_SECRET` | Kotak Neo API Consumer Secret | `<your_consumer_secret>` |
 | `KOTAK_MOBILE_NUMBER` | Kotak registered 10-digit mobile number | `+91xxxxxxxxxx` |
