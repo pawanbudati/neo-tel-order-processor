@@ -30,13 +30,16 @@ async def run(args):
     from src.notifier import notifier
     account_id = args.account_id
     notifier.notify_startup(account_id)
-    subscription_id = (
+    raw_sub = (
         args.subscription_id
         or args.group_id
         or os.getenv("PUBSUB_SUBSCRIPTION_ID")
         or os.getenv("KAFKA_CONSUMER_GROUP_ID")
-        or f"kotak_executor_{account_id}"
     )
+    if not raw_sub or (raw_sub == "kotak_executor_default" and account_id != "default"):
+        subscription_id = f"kotak_executor_{account_id}"
+    else:
+        subscription_id = raw_sub
     topic = args.pubsub_topic or args.kafka_topic or os.getenv("PUBSUB_TOPIC_SIGNALS")
     project_id = args.project_id or os.getenv("GCP_PROJECT_ID")
 
