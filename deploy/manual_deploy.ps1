@@ -114,6 +114,8 @@ function Invoke-DeployTarget {
             --exclude='.env' --include='.env.example' --exclude='.env.*' `
             --exclude='.venv/' --exclude='venv/' `
             --exclude='logs/' --exclude='*.log' `
+            --exclude='runtime/' `
+            --exclude='*.json' `
             --exclude='__pycache__/' `
             -e $rsyncSsh `
             "$rootDir/" "${UserName}@${HostName}:${RemoteDir}/"
@@ -127,6 +129,8 @@ function Invoke-DeployTarget {
             "--exclude=venv",
             "--exclude=logs",
             "--exclude=*.log",
+            "--exclude=runtime",
+            "--exclude=*.json",
             "--exclude=__pycache__"
         )
         
@@ -157,28 +161,28 @@ $defaultPort = if ($Port -gt 0) { $Port } elseif ($env:GCP_VM_SSH_PORT) { [int]$
 $defaultPath = if ($DeployPath) { $DeployPath } elseif ($env:CONSUMER_DEPLOY_PATH) { $env:CONSUMER_DEPLOY_PATH } else { $env:DEPLOY_PATH }
 
 # Yuva VM
-$yuvaHost = if ($env:GCP_VM_HOST_YUVA) { $env:GCP_VM_HOST_YUVA } else { $env:VM_HOST_YUVA }
+$yuvaHost = if ($env:GCP_VM_IP_YUVA) { $env:GCP_VM_IP_YUVA } elseif ($env:GCP_VM_HOST_YUVA) { $env:GCP_VM_HOST_YUVA } else { $env:VM_HOST_YUVA }
 $yuvaUser = if ($env:GCP_VM_USER_YUVA) { $env:GCP_VM_USER_YUVA } else { $defaultUser }
 $yuvaKey  = if ($env:GCP_VM_SSH_KEY_YUVA) { $env:GCP_VM_SSH_KEY_YUVA } else { $defaultKey }
 $yuvaPort = if ($env:GCP_VM_SSH_PORT_YUVA) { [int]$env:GCP_VM_SSH_PORT_YUVA } else { $defaultPort }
 $yuvaPath = if ($env:CONSUMER_DEPLOY_PATH_YUVA) { $env:CONSUMER_DEPLOY_PATH_YUVA } else { $defaultPath }
 
 # Pavan VM
-$pavanHost = if ($env:GCP_VM_HOST_PAVAN) { $env:GCP_VM_HOST_PAVAN } else { $env:VM_HOST_PAVAN }
+$pavanHost = if ($env:GCP_VM_IP_PAVAN) { $env:GCP_VM_IP_PAVAN } elseif ($env:GCP_VM_HOST_PAVAN) { $env:GCP_VM_HOST_PAVAN } else { $env:VM_HOST_PAVAN }
 $pavanUser = if ($env:GCP_VM_USER_PAVAN) { $env:GCP_VM_USER_PAVAN } else { $defaultUser }
 $pavanKey  = if ($env:GCP_VM_SSH_KEY_PAVAN) { $env:GCP_VM_SSH_KEY_PAVAN } else { $defaultKey }
 $pavanPort = if ($env:GCP_VM_SSH_PORT_PAVAN) { [int]$env:GCP_VM_SSH_PORT_PAVAN } else { $defaultPort }
 $pavanPath = if ($env:CONSUMER_DEPLOY_PATH_PAVAN) { $env:CONSUMER_DEPLOY_PATH_PAVAN } else { $defaultPath }
 
 # Sahi VM
-$sahiHost = if ($env:GCP_VM_HOST_SAHI) { $env:GCP_VM_HOST_SAHI } else { $env:VM_HOST_SAHI }
+$sahiHost = if ($env:GCP_VM_IP_SAHI) { $env:GCP_VM_IP_SAHI } elseif ($env:GCP_VM_HOST_SAHI) { $env:GCP_VM_HOST_SAHI } else { $env:VM_HOST_SAHI }
 $sahiUser = if ($env:GCP_VM_USER_SAHI) { $env:GCP_VM_USER_SAHI } else { $defaultUser }
 $sahiKey  = if ($env:GCP_VM_SSH_KEY_SAHI) { $env:GCP_VM_SSH_KEY_SAHI } else { $defaultKey }
 $sahiPort = if ($env:GCP_VM_SSH_PORT_SAHI) { [int]$env:GCP_VM_SSH_PORT_SAHI } else { $defaultPort }
 $sahiPath = if ($env:CONSUMER_DEPLOY_PATH_SAHI) { $env:CONSUMER_DEPLOY_PATH_SAHI } else { $defaultPath }
 
-# Hari VM
-$hariHost = if ($env:GCP_VM_HOST_HARI) { $env:GCP_VM_HOST_HARI } else { $env:VM_HOST_HARI }
+# Hari VM (Supports distinct IP address and Hostname)
+$hariHost = if ($env:GCP_VM_IP_HARI) { $env:GCP_VM_IP_HARI } elseif ($env:GCP_VM_HOST_HARI) { $env:GCP_VM_HOST_HARI } else { $env:VM_HOST_HARI }
 $hariUser = if ($env:GCP_VM_USER_HARI) { $env:GCP_VM_USER_HARI } else { $defaultUser }
 $hariKey  = if ($env:GCP_VM_SSH_KEY_HARI) { $env:GCP_VM_SSH_KEY_HARI } else { $defaultKey }
 $hariPort = if ($env:GCP_VM_SSH_PORT_HARI) { [int]$env:GCP_VM_SSH_PORT_HARI } else { $defaultPort }

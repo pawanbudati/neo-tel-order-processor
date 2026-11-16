@@ -29,11 +29,13 @@ jobs:
         env:
           SSH_PRIVATE_KEY: ${{ secrets.GCP_VM_SSH_KEY_YUVA || secrets.GCP_VM_SSH_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.GCP_VM_KNOWN_HOSTS_YUVA || secrets.GCP_VM_KNOWN_HOSTS }}
+          VM_IP: ${{ secrets.GCP_VM_IP_YUVA || vars.GCP_VM_IP_YUVA }}
           VM_HOST: ${{ secrets.GCP_VM_HOST_YUVA || vars.GCP_VM_HOST_YUVA }}
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_YUVA || vars.GCP_VM_SSH_PORT || '22' }}
         run: |
-          if [ -z "$VM_HOST" ]; then
-            echo "GCP_VM_HOST_YUVA is not set. Skipping Yuva deployment."
+          TARGET="${VM_IP:-$VM_HOST}"
+          if [ -z "$TARGET" ]; then
+            echo "Neither GCP_VM_IP_YUVA nor GCP_VM_HOST_YUVA is set. Skipping Yuva deployment."
             echo "skip=true" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -43,20 +45,27 @@ jobs:
           if [ -n "$SSH_KNOWN_HOSTS" ]; then
             printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           fi
-          ssh-keyscan -p "$VM_PORT" -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p "$VM_PORT" -H "$TARGET" >> ~/.ssh/known_hosts 2>/dev/null || true
+          if [ -n "$VM_HOST" ] && [ -n "$VM_IP" ] && [ "$VM_HOST" != "$VM_IP" ]; then
+            ssh-keyscan -p "$VM_PORT" -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+            printf 'Host %s\n  HostName %s\n  Port %s\n  IdentityFile ~/.ssh/deploy_key\n  StrictHostKeyChecking accept-new\n' "$VM_HOST" "$VM_IP" "$VM_PORT" >> ~/.ssh/config
+            chmod 600 ~/.ssh/config
+          fi
 
       - name: Sync consumer files to Yuva VM
         if: env.skip != 'true'
         env:
+          VM_IP: ${{ secrets.GCP_VM_IP_YUVA || vars.GCP_VM_IP_YUVA }}
           VM_HOST: ${{ secrets.GCP_VM_HOST_YUVA || vars.GCP_VM_HOST_YUVA }}
           VM_USER: ${{ secrets.GCP_VM_USER_YUVA || vars.GCP_VM_USER_YUVA || secrets.GCP_VM_USER || vars.GCP_VM_USER }}
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_YUVA || vars.GCP_VM_SSH_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH_YUVA || vars.CONSUMER_DEPLOY_PATH || '/home/' }}
           LOG_CLEANUP_CRON: ${{ secrets.LOG_CLEANUP_CRON_YUVA || vars.LOG_CLEANUP_CRON_YUVA || secrets.LOG_CLEANUP_CRON || vars.LOG_CLEANUP_CRON || '0 8 * * *' }}
         run: |
+          TARGET="${VM_IP:-$VM_HOST}"
           if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" "mkdir -p '$DEPLOY_PATH'"
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$VM_HOST" 'if ! command -v rsync >/dev/null 2>&1; then if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y rsync; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rsync; elif command -v yum >/dev/null 2>&1; then sudo yum install -y rsync; else echo "No supported package manager found to install rsync" >&2; exit 1; fi; fi'
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" "mkdir -p '$DEPLOY_PATH'"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$TARGET" 'if ! command -v rsync >/dev/null 2>&1; then if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y rsync; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rsync; elif command -v yum >/dev/null 2>&1; then sudo yum install -y rsync; else echo "No supported package manager found to install rsync" >&2; exit 1; fi; fi'
           rsync -az --delete \
             --exclude='.git/' \
             --exclude='.env' --include='.env.example' --exclude='.env.*' \
@@ -65,8 +74,8 @@ jobs:
             --exclude='runtime/' \
             --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
-            ./ "$VM_USER@$VM_HOST:$DEPLOY_PATH/"
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" \
+            ./ "$VM_USER@$TARGET:$DEPLOY_PATH/"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
             "DEPLOY_PATH='$DEPLOY_PATH' LOG_CLEANUP_CRON='$LOG_CLEANUP_CRON' bash '$DEPLOY_PATH/deploy/deploy.sh'"
 
   deploy-pavan:
@@ -81,11 +90,13 @@ jobs:
         env:
           SSH_PRIVATE_KEY: ${{ secrets.GCP_VM_SSH_KEY_PAVAN || secrets.GCP_VM_SSH_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.GCP_VM_KNOWN_HOSTS_PAVAN || secrets.GCP_VM_KNOWN_HOSTS }}
+          VM_IP: ${{ secrets.GCP_VM_IP_PAVAN || vars.GCP_VM_IP_PAVAN }}
           VM_HOST: ${{ secrets.GCP_VM_HOST_PAVAN || vars.GCP_VM_HOST_PAVAN }}
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_PAVAN || vars.GCP_VM_SSH_PORT || '22' }}
         run: |
-          if [ -z "$VM_HOST" ]; then
-            echo "GCP_VM_HOST_PAVAN is not set. Skipping Pavan deployment."
+          TARGET="${VM_IP:-$VM_HOST}"
+          if [ -z "$TARGET" ]; then
+            echo "Neither GCP_VM_IP_PAVAN nor GCP_VM_HOST_PAVAN is set. Skipping Pavan deployment."
             echo "skip=true" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -95,20 +106,27 @@ jobs:
           if [ -n "$SSH_KNOWN_HOSTS" ]; then
             printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           fi
-          ssh-keyscan -p "$VM_PORT" -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p "$VM_PORT" -H "$TARGET" >> ~/.ssh/known_hosts 2>/dev/null || true
+          if [ -n "$VM_HOST" ] && [ -n "$VM_IP" ] && [ "$VM_HOST" != "$VM_IP" ]; then
+            ssh-keyscan -p "$VM_PORT" -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+            printf 'Host %s\n  HostName %s\n  Port %s\n  IdentityFile ~/.ssh/deploy_key\n  StrictHostKeyChecking accept-new\n' "$VM_HOST" "$VM_IP" "$VM_PORT" >> ~/.ssh/config
+            chmod 600 ~/.ssh/config
+          fi
 
       - name: Sync consumer files to Pavan VM
         if: env.skip != 'true'
         env:
+          VM_IP: ${{ secrets.GCP_VM_IP_PAVAN || vars.GCP_VM_IP_PAVAN }}
           VM_HOST: ${{ secrets.GCP_VM_HOST_PAVAN || vars.GCP_VM_HOST_PAVAN }}
           VM_USER: ${{ secrets.GCP_VM_USER_PAVAN || vars.GCP_VM_USER_PAVAN || secrets.GCP_VM_USER || vars.GCP_VM_USER }}
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_PAVAN || vars.GCP_VM_SSH_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH_PAVAN || vars.CONSUMER_DEPLOY_PATH || '/home/' }}
           LOG_CLEANUP_CRON: ${{ secrets.LOG_CLEANUP_CRON_PAVAN || vars.LOG_CLEANUP_CRON_PAVAN || secrets.LOG_CLEANUP_CRON || vars.LOG_CLEANUP_CRON || '0 8 * * *' }}
         run: |
+          TARGET="${VM_IP:-$VM_HOST}"
           if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" "mkdir -p '$DEPLOY_PATH'"
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$VM_HOST" 'if ! command -v rsync >/dev/null 2>&1; then if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y rsync; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rsync; elif command -v yum >/dev/null 2>&1; then sudo yum install -y rsync; else echo "No supported package manager found to install rsync" >&2; exit 1; fi; fi'
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" "mkdir -p '$DEPLOY_PATH'"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$TARGET" 'if ! command -v rsync >/dev/null 2>&1; then if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y rsync; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rsync; elif command -v yum >/dev/null 2>&1; then sudo yum install -y rsync; else echo "No supported package manager found to install rsync" >&2; exit 1; fi; fi'
           rsync -az --delete \
             --exclude='.git/' \
             --exclude='.env' --include='.env.example' --exclude='.env.*' \
@@ -117,8 +135,8 @@ jobs:
             --exclude='runtime/' \
             --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
-            ./ "$VM_USER@$VM_HOST:$DEPLOY_PATH/"
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" \
+            ./ "$VM_USER@$TARGET:$DEPLOY_PATH/"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
             "DEPLOY_PATH='$DEPLOY_PATH' LOG_CLEANUP_CRON='$LOG_CLEANUP_CRON' bash '$DEPLOY_PATH/deploy/deploy.sh'"
 
   deploy-sahi:
@@ -133,11 +151,13 @@ jobs:
         env:
           SSH_PRIVATE_KEY: ${{ secrets.GCP_VM_SSH_KEY_SAHI || secrets.GCP_VM_SSH_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.GCP_VM_KNOWN_HOSTS_SAHI || secrets.GCP_VM_KNOWN_HOSTS }}
+          VM_IP: ${{ secrets.GCP_VM_IP_SAHI || vars.GCP_VM_IP_SAHI }}
           VM_HOST: ${{ secrets.GCP_VM_HOST_SAHI || vars.GCP_VM_HOST_SAHI }}
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_SAHI || vars.GCP_VM_SSH_PORT || '22' }}
         run: |
-          if [ -z "$VM_HOST" ]; then
-            echo "GCP_VM_HOST_SAHI is not set. Skipping Sahi deployment."
+          TARGET="${VM_IP:-$VM_HOST}"
+          if [ -z "$TARGET" ]; then
+            echo "Neither GCP_VM_IP_SAHI nor GCP_VM_HOST_SAHI is set. Skipping Sahi deployment."
             echo "skip=true" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -147,20 +167,27 @@ jobs:
           if [ -n "$SSH_KNOWN_HOSTS" ]; then
             printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           fi
-          ssh-keyscan -p "$VM_PORT" -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p "$VM_PORT" -H "$TARGET" >> ~/.ssh/known_hosts 2>/dev/null || true
+          if [ -n "$VM_HOST" ] && [ -n "$VM_IP" ] && [ "$VM_HOST" != "$VM_IP" ]; then
+            ssh-keyscan -p "$VM_PORT" -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+            printf 'Host %s\n  HostName %s\n  Port %s\n  IdentityFile ~/.ssh/deploy_key\n  StrictHostKeyChecking accept-new\n' "$VM_HOST" "$VM_IP" "$VM_PORT" >> ~/.ssh/config
+            chmod 600 ~/.ssh/config
+          fi
 
       - name: Sync consumer files to Sahi VM
         if: env.skip != 'true'
         env:
+          VM_IP: ${{ secrets.GCP_VM_IP_SAHI || vars.GCP_VM_IP_SAHI }}
           VM_HOST: ${{ secrets.GCP_VM_HOST_SAHI || vars.GCP_VM_HOST_SAHI }}
           VM_USER: ${{ secrets.GCP_VM_USER_SAHI || vars.GCP_VM_USER_SAHI || secrets.GCP_VM_USER || vars.GCP_VM_USER }}
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_SAHI || vars.GCP_VM_SSH_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH_SAHI || vars.CONSUMER_DEPLOY_PATH || '/home/' }}
           LOG_CLEANUP_CRON: ${{ secrets.LOG_CLEANUP_CRON_SAHI || vars.LOG_CLEANUP_CRON_SAHI || secrets.LOG_CLEANUP_CRON || vars.LOG_CLEANUP_CRON || '0 8 * * *' }}
         run: |
+          TARGET="${VM_IP:-$VM_HOST}"
           if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" "mkdir -p '$DEPLOY_PATH'"
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$VM_HOST" 'if ! command -v rsync >/dev/null 2>&1; then if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y rsync; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rsync; elif command -v yum >/dev/null 2>&1; then sudo yum install -y rsync; else echo "No supported package manager found to install rsync" >&2; exit 1; fi; fi'
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" "mkdir -p '$DEPLOY_PATH'"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$TARGET" 'if ! command -v rsync >/dev/null 2>&1; then if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y rsync; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rsync; elif command -v yum >/dev/null 2>&1; then sudo yum install -y rsync; else echo "No supported package manager found to install rsync" >&2; exit 1; fi; fi'
           rsync -az --delete \
             --exclude='.git/' \
             --exclude='.env' --include='.env.example' --exclude='.env.*' \
@@ -169,8 +196,8 @@ jobs:
             --exclude='runtime/' \
             --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
-            ./ "$VM_USER@$VM_HOST:$DEPLOY_PATH/"
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" \
+            ./ "$VM_USER@$TARGET:$DEPLOY_PATH/"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
             "DEPLOY_PATH='$DEPLOY_PATH' LOG_CLEANUP_CRON='$LOG_CLEANUP_CRON' bash '$DEPLOY_PATH/deploy/deploy.sh'"
 
   deploy-hari:
@@ -185,11 +212,13 @@ jobs:
         env:
           SSH_PRIVATE_KEY: ${{ secrets.GCP_VM_SSH_KEY_HARI || secrets.GCP_VM_SSH_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.GCP_VM_KNOWN_HOSTS_HARI || secrets.GCP_VM_KNOWN_HOSTS }}
+          VM_IP: ${{ secrets.GCP_VM_IP_HARI || vars.GCP_VM_IP_HARI }}
           VM_HOST: ${{ secrets.GCP_VM_HOST_HARI || vars.GCP_VM_HOST_HARI }}
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_HARI || vars.GCP_VM_SSH_PORT || '22' }}
         run: |
-          if [ -z "$VM_HOST" ]; then
-            echo "GCP_VM_HOST_HARI is not set. Skipping Hari deployment."
+          TARGET="${VM_IP:-$VM_HOST}"
+          if [ -z "$TARGET" ]; then
+            echo "Neither GCP_VM_IP_HARI nor GCP_VM_HOST_HARI is set. Skipping Hari deployment."
             echo "skip=true" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -199,20 +228,27 @@ jobs:
           if [ -n "$SSH_KNOWN_HOSTS" ]; then
             printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           fi
-          ssh-keyscan -p "$VM_PORT" -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p "$VM_PORT" -H "$TARGET" >> ~/.ssh/known_hosts 2>/dev/null || true
+          if [ -n "$VM_HOST" ] && [ -n "$VM_IP" ] && [ "$VM_HOST" != "$VM_IP" ]; then
+            ssh-keyscan -p "$VM_PORT" -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+            printf 'Host %s\n  HostName %s\n  Port %s\n  IdentityFile ~/.ssh/deploy_key\n  StrictHostKeyChecking accept-new\n' "$VM_HOST" "$VM_IP" "$VM_PORT" >> ~/.ssh/config
+            chmod 600 ~/.ssh/config
+          fi
 
       - name: Sync consumer files to Hari VM
         if: env.skip != 'true'
         env:
+          VM_IP: ${{ secrets.GCP_VM_IP_HARI || vars.GCP_VM_IP_HARI }}
           VM_HOST: ${{ secrets.GCP_VM_HOST_HARI || vars.GCP_VM_HOST_HARI }}
           VM_USER: ${{ secrets.GCP_VM_USER_HARI || vars.GCP_VM_USER_HARI || secrets.GCP_VM_USER || vars.GCP_VM_USER }}
           VM_PORT: ${{ vars.GCP_VM_SSH_PORT_HARI || vars.GCP_VM_SSH_PORT || '22' }}
           DEPLOY_PATH: ${{ vars.CONSUMER_DEPLOY_PATH_HARI || vars.CONSUMER_DEPLOY_PATH || '/home/' }}
           LOG_CLEANUP_CRON: ${{ secrets.LOG_CLEANUP_CRON_HARI || vars.LOG_CLEANUP_CRON_HARI || secrets.LOG_CLEANUP_CRON || vars.LOG_CLEANUP_CRON || '0 8 * * *' }}
         run: |
+          TARGET="${VM_IP:-$VM_HOST}"
           if [ "$DEPLOY_PATH" = '/home/' ]; then DEPLOY_PATH="/home/$VM_USER/apps/neo-tel-order-processor"; fi
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" "mkdir -p '$DEPLOY_PATH'"
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$VM_HOST" 'if ! command -v rsync >/dev/null 2>&1; then if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y rsync; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rsync; elif command -v yum >/dev/null 2>&1; then sudo yum install -y rsync; else echo "No supported package manager found to install rsync" >&2; exit 1; fi; fi'
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" "mkdir -p '$DEPLOY_PATH'"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" "$VM_USER@$TARGET" 'if ! command -v rsync >/dev/null 2>&1; then if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y rsync; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rsync; elif command -v yum >/dev/null 2>&1; then sudo yum install -y rsync; else echo "No supported package manager found to install rsync" >&2; exit 1; fi; fi'
           rsync -az --delete \
             --exclude='.git/' \
             --exclude='.env' --include='.env.example' --exclude='.env.*' \
@@ -221,6 +257,6 @@ jobs:
             --exclude='runtime/' \
             --exclude='*.json' \
             -e "ssh -i ~/.ssh/deploy_key -p $VM_PORT -o StrictHostKeyChecking=accept-new" \
-            ./ "$VM_USER@$VM_HOST:$DEPLOY_PATH/"
-          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$VM_HOST" \
+            ./ "$VM_USER@$TARGET:$DEPLOY_PATH/"
+          ssh -i ~/.ssh/deploy_key -p "$VM_PORT" -o StrictHostKeyChecking=accept-new "$VM_USER@$TARGET" \
             "DEPLOY_PATH='$DEPLOY_PATH' LOG_CLEANUP_CRON='$LOG_CLEANUP_CRON' bash '$DEPLOY_PATH/deploy/deploy.sh'"

@@ -76,6 +76,8 @@ deploy_to_target() {
       --exclude='.env' --include='.env.example' --exclude='.env.*' \
       --exclude='.venv/' --exclude='venv/' \
       --exclude='logs/' --exclude='*.log' \
+      --exclude='runtime/' \
+      --exclude='*.json' \
       --exclude='__pycache__/' \
       -e "$rsync_ssh" \
       "$ROOT_DIR/" "$user@$host:$remote_path/"
@@ -88,6 +90,8 @@ deploy_to_target() {
         --exclude="venv" \
         --exclude="logs" \
         --exclude="*.log" \
+        --exclude="runtime" \
+        --exclude="*.json" \
         --exclude="__pycache__" \
         -C "$ROOT_DIR" -czf - . | ssh "${ssh_opts[@]}" "$user@$host" "tar -xzf - -C '$remote_path'"
   fi
@@ -109,28 +113,28 @@ DEFAULT_PORT="${GCP_VM_SSH_PORT:-${VM_PORT:-22}}"
 DEFAULT_PATH="${CONSUMER_DEPLOY_PATH:-${DEPLOY_PATH:-}}"
 
 # Resolve Yuva VM configuration
-YUVA_HOST="${GCP_VM_HOST_YUVA:-${VM_HOST_YUVA:-}}"
+YUVA_HOST="${GCP_VM_IP_YUVA:-${GCP_VM_HOST_YUVA:-${VM_HOST_YUVA:-}}}"
 YUVA_USER="${GCP_VM_USER_YUVA:-${VM_USER_YUVA:-$DEFAULT_USER}}"
 YUVA_KEY="${GCP_VM_SSH_KEY_YUVA:-${SSH_KEY_PATH_YUVA:-$DEFAULT_KEY}}"
 YUVA_PORT="${GCP_VM_SSH_PORT_YUVA:-${VM_PORT_YUVA:-$DEFAULT_PORT}}"
 YUVA_PATH="${CONSUMER_DEPLOY_PATH_YUVA:-${DEPLOY_PATH_YUVA:-$DEFAULT_PATH}}"
 
 # Resolve Pavan VM configuration
-PAVAN_HOST="${GCP_VM_HOST_PAVAN:-${VM_HOST_PAVAN:-}}"
+PAVAN_HOST="${GCP_VM_IP_PAVAN:-${GCP_VM_HOST_PAVAN:-${VM_HOST_PAVAN:-}}}"
 PAVAN_USER="${GCP_VM_USER_PAVAN:-${VM_USER_PAVAN:-$DEFAULT_USER}}"
 PAVAN_KEY="${GCP_VM_SSH_KEY_PAVAN:-${SSH_KEY_PATH_PAVAN:-$DEFAULT_KEY}}"
 PAVAN_PORT="${GCP_VM_SSH_PORT_PAVAN:-${VM_PORT_PAVAN:-$DEFAULT_PORT}}"
 PAVAN_PATH="${CONSUMER_DEPLOY_PATH_PAVAN:-${DEPLOY_PATH_PAVAN:-$DEFAULT_PATH}}"
 
 # Resolve Sahi VM configuration
-SAHI_HOST="${GCP_VM_HOST_SAHI:-${VM_HOST_SAHI:-}}"
+SAHI_HOST="${GCP_VM_IP_SAHI:-${GCP_VM_HOST_SAHI:-${VM_HOST_SAHI:-}}}"
 SAHI_USER="${GCP_VM_USER_SAHI:-${VM_USER_SAHI:-$DEFAULT_USER}}"
 SAHI_KEY="${GCP_VM_SSH_KEY_SAHI:-${SSH_KEY_PATH_SAHI:-$DEFAULT_KEY}}"
 SAHI_PORT="${GCP_VM_SSH_PORT_SAHI:-${VM_PORT_SAHI:-$DEFAULT_PORT}}"
 SAHI_PATH="${CONSUMER_DEPLOY_PATH_SAHI:-${DEPLOY_PATH_SAHI:-$DEFAULT_PATH}}"
 
-# Resolve Hari VM configuration
-HARI_HOST="${GCP_VM_HOST_HARI:-${VM_HOST_HARI:-}}"
+# Resolve Hari VM configuration (Supports distinct IP and Hostname)
+HARI_HOST="${GCP_VM_IP_HARI:-${GCP_VM_HOST_HARI:-${VM_HOST_HARI:-}}}"
 HARI_USER="${GCP_VM_USER_HARI:-${VM_USER_HARI:-$DEFAULT_USER}}"
 HARI_KEY="${GCP_VM_SSH_KEY_HARI:-${SSH_KEY_PATH_HARI:-$DEFAULT_KEY}}"
 HARI_PORT="${GCP_VM_SSH_PORT_HARI:-${VM_PORT_HARI:-$DEFAULT_PORT}}"
